@@ -149,7 +149,12 @@ void saveToSD_ConvertBMP() {
     bmpheader.biPlanes = 1;
     bmpheader.biBitCount = 24;
     bmpheader.biCompression = 0;
-
+    bmpheader.biSizeImage = 0;  //以下、MacOS向けに追加
+    bmpheader.biXPelsPerMeter = 2835;
+    bmpheader.biYPelsPerMeter = 2835;
+    bmpheader.biClrUsed = 0;
+    bmpheader.biClrImportant = 0;
+    
     file.write((std::uint8_t*)&bmpheader, sizeof(bmpheader));
     std::uint8_t buffer[rowSize];
     memset(&buffer[rowSize - 4], 0, 4);
