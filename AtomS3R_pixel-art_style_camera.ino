@@ -83,6 +83,54 @@ camera_config_t camera_config = {
   .sccb_i2c_port = 0,
 };
 
+bool loadPaletteFromSD(int paletteIndex) {
+  if (paletteIndex < 0 || paletteIndex > 7) {
+    return false;
+  }
+
+  // ファイル名を生成 (例: /ColorPalette0.txt)
+  String filename = "/ColorPalette" + String(paletteIndex) + ".txt";
+
+  // ファイルが存在するか確認
+  if (!SD.exists(filename)) {
+    return false;  // ファイルが存在しない場合はデフォルトを使うのでfalseを返す
+  }
+
+  // ファイルを開く
+  File file = SD.open(filename, FILE_READ);
+  if (!file) {
+    return false;  // ファイルオープン失敗
+  }
+
+  // ファイルから8つのカラーコードを読み込む
+  int colorCount = 0;
+  while (file.available() && colorCount < 8) {
+    String line = file.readStringUntil('\n');  // 1行読み込む
+    line.trim();                               // 前後の空白や改行文字を削除
+
+    if (line.length() > 0) {
+      // strtoul(const char *str, char **endptr, int base)
+      // base=0 で 0x (16進), 0 (8進), それ以外 (10進) を自動判別
+      uint32_t colorValue = strtoul(line.c_str(), NULL, 0);
+
+      // エラーチェック (strtoulはエラー時に0を返すことがあるが、0x000000も有効な色なので完全ではない)
+      // ここでは単純に読み込んだ値を格納する
+      ColorPalettes[paletteIndex][colorCount] = colorValue;
+      colorCount++;
+    }
+  }
+
+  file.close();  // ファイルを閉じる
+
+  // 8色読み込めたか確認
+  if (colorCount == 8) {
+    return true;  // 成功
+  } else {
+    // もし8色以下の場合は読み込めた分だけ反映して残りはデフォルトを使用する
+    return false;  // 読み込み失敗（色が足りない）
+  }
+}
+
 bool CameraBegin() {
   esp_err_t err = esp_camera_init(&camera_config);
   if (err != ESP_OK) {
@@ -234,8 +282,17 @@ void setup() {
     FastLED.show();  //エラー
     delay(500);
     return;
+  } else {
+    // パレット0から7までループ
+    for (int i = 0; i < 8; i++) {
+      if (loadPaletteFromSD(i)) {
+        //M5.Display.printf("Palette %d loaded from SD.\n", i);
+      } else {
+        //M5.Display.printf("Palette %d use default.\n", i);
+      }
+      delay(100);
+    }
   }
-  delay(100);
   SD.end();  //一旦ENDしておく
 
   if (psramFound()) {
