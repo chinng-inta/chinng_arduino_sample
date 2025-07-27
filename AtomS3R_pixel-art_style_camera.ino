@@ -296,7 +296,6 @@ void setup() {
   SD.end();  //一旦ENDしておく
 
   if (psramFound()) {
-    size_t psram_size = esp_spiram_get_size() / 1048576;
     camera_config.pixel_format = PIXFORMAT_RGB565;
     camera_config.fb_location = CAMERA_FB_IN_PSRAM;
     camera_config.fb_count = 2;
