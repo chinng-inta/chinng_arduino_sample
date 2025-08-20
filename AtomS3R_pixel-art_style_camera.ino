@@ -11,13 +11,14 @@
 CRGB LED[1];
 camera_fb_t* fb;
 
-//SDカード保存用
+M5Canvas canvas0;
+
+// SDカード保存用
 char filename[64];
 int filecounter = 1;
-M5Canvas canvas0;
-uint8_t graydata[240 * 176];  //HQVGAが今のところ最適
+uint8_t graydata[240 * 176];  // HQVGAが今のところ最適
 
-//最大8色のカラーパレット
+// 最大8色のカラーパレット
 uint32_t ColorPalettes[8][8] = {
   { // パレット0 slso8
     0x0D2B45, 0x203C56, 0x544E68, 0x8D697A, 0xD08159, 0xFFAA5E, 0xFFD4A3, 0xFFECD6 },
@@ -38,11 +39,14 @@ uint32_t ColorPalettes[8][8] = {
 };
 
 int currentPalettelndex = 0;  // 現在のパレットのインデックス
-int maxPalettelndex = 8;      //パレット総数
+int maxPalettelndex = 8;      // パレット総数
 
-//TailBATを使用しているとき、消費電流が45mA以下だと電源がシャットダウンしてしまう対策
+// TailBATを使用しているとき、消費電流が45mA以下だと電源がシャットダウンしてしまう対策
 uint32_t LED_ON_DURATION = 120000;  // LED 点灯時間 (ミリ秒)
-uint32_t keyOnTime = 0;             //キースイッチを操作した時間
+uint32_t keyOnTime = 0;             // キースイッチを操作した時間
+
+int dither = 0;  // 0 = ディザ未使用 1 = ディザ使用
+int levels = 8;  // ディザ階調数 2以上
 
 camera_config_t camera_config = {
   .pin_pwdn = -1,
@@ -202,7 +206,7 @@ void saveToSD_ConvertBMP() {
     bmpheader.biYPelsPerMeter = 2835;
     bmpheader.biClrUsed = 0;
     bmpheader.biClrImportant = 0;
-    
+
     file.write((std::uint8_t*)&bmpheader, sizeof(bmpheader));
     std::uint8_t buffer[rowSize];
     memset(&buffer[rowSize - 4], 0, 4);
@@ -234,7 +238,7 @@ void saveToSD_ConvertBMP() {
   }
 }
 
-void saveGraylevel() {
+void saveGraylevel_fromFb() {
   uint8_t* fb_data = fb->buf;
   int width = fb->width;
   int height = fb->height;
@@ -243,25 +247,119 @@ void saveGraylevel() {
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < (width * 2); x = x + 2) {
 
-      //各ピクセルの色を取得
+      // 各ピクセルの色を取得
       uint32_t rgb565Color = (fb_data[y * width * 2 + x] << 8) | fb_data[y * width * 2 + x + 1];
 
-      //RGB565からRGB888へ変換
+      // RGB565からRGB888へ変換
       uint32_t rgb888Color = canvas0.color16to24(rgb565Color);
       uint8_t r = (rgb888Color >> 16) & 0xFF;
       uint8_t g = (rgb888Color >> 8) & 0xFF;
       uint8_t b = rgb888Color & 0xFF;
 
-      //輝度の計算 BT.709の係数を使用
+      // 輝度の計算 BT.709の係数を使用
       uint16_t luminance = (uint16_t)(0.2126 * r + 0.7152 * g + 0.0722 * b);
 
-      //輝度を16階調のグレースケールに変換
+      // 輝度を8階調のグレースケールに変換
       uint8_t grayLevel = luminance / 32;  // 256/32 = 8
 
-      //輝度情報を保存
+      // 輝度情報を保存
       graydata[i] = grayLevel;
       i++;
     }
+  }
+}
+
+void saveGraylevel_fromCanvas(M5Canvas& srcSprite) {
+  int width = srcSprite.width();
+  int height = srcSprite.height();
+  int i = 0;
+
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+
+      // 各ピクセルの色を取得
+      uint32_t rgb565Color = srcSprite.readPixel(x, y);
+
+      // RGB565からRGB888へ変換
+      uint32_t rgb888Color = srcSprite.color16to24(rgb565Color);
+      uint8_t r = (rgb888Color >> 16) & 0xFF;
+      uint8_t g = (rgb888Color >> 8) & 0xFF;
+      uint8_t b = rgb888Color & 0xFF;
+
+      // 輝度の計算 BT.709の係数を使用
+      uint16_t luminance = (uint16_t)(0.2126 * r + 0.7152 * g + 0.0722 * b);
+
+      // 輝度を16階調のグレースケールに変換
+      uint8_t grayLevel = luminance / 32;  // 256/32 = 8
+
+      // 輝度情報を保存
+      graydata[i] = grayLevel;
+      i++;
+    }
+  }
+}
+
+void applyColorBayerDither4x4(M5Canvas& srcSprite, M5Canvas& dstSprite, int levelsPerChannel) {
+
+  // Bayerマトリックス
+  static const uint8_t bayer4x4[4][4] = {
+    { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 }
+  };
+  static const float bayerDivisor = 16.0f;
+
+  int width = dstSprite.width();
+  int height = dstSprite.height();
+  float step = 255.0f / (float)(levelsPerChannel - 1);
+
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+
+      if (x >= srcSprite.width() || y >= srcSprite.height()) {
+        dstSprite.drawPixel(x, y, TFT_BLACK);
+        continue;
+      }
+
+      // 元画像のピクセル色を取得
+      uint32_t rgb565Color = srcSprite.readPixel(x, y);
+      uint32_t originalColorValue = srcSprite.color16to24(rgb565Color);
+      uint8_t r_src = (originalColorValue >> 16) & 0xFF;
+      uint8_t g_src = (originalColorValue >> 8) & 0xFF;
+      uint8_t b_src = originalColorValue & 0xFF;
+
+      // 各チャンネルに対してディザリングを適用
+      uint8_t r_dst, g_dst, b_dst;
+      uint8_t channels_src[3] = { r_src, g_src, b_src };
+      uint8_t channels_dst[3];
+      float bayerThreshold = (float)bayer4x4[y % 4][x % 4] / bayerDivisor;
+
+      for (int ch = 0; ch < 3; ++ch) {
+        uint8_t val_src = channels_src[ch];
+        int level_index = floor((float)val_src / step);
+        if (level_index >= levelsPerChannel - 1) { level_index = levelsPerChannel - 2; }
+        float level_low = (float)level_index * step;
+        float error = (float)val_src - level_low;
+        float normalized_error = (step > 0) ? (error / step) : 0.0f;
+        if (normalized_error < 0.0f) normalized_error = 0.0f;
+        if (normalized_error > 1.0f) normalized_error = 1.0f;
+
+        uint8_t val_dst;
+        if (normalized_error >= bayerThreshold) {
+          val_dst = (uint8_t)round(((float)level_index + 1.0f) * step);
+        } else {
+          val_dst = (uint8_t)round(level_low);
+        }
+        channels_dst[ch] = std::max(0, std::min(255, (int)val_dst));
+      }
+
+      r_dst = channels_dst[0];
+      g_dst = channels_dst[1];
+      b_dst = channels_dst[2];
+
+      // 新しいRGB値で出力先スプライトに描画
+      uint16_t ditheredColor = dstSprite.color565(r_dst, g_dst, b_dst);
+      dstSprite.drawPixel(x, y, ditheredColor);
+    }
+    // delay(0);
   }
 }
 
@@ -276,10 +374,10 @@ void setup() {
   LED[0] = CRGB::Red;
   FastLED.setBrightness(200);
 
-  //一度SDカードをマウントして確認
+  // 一度SDカードをマウントして確認
   SPI.begin(7, 8, 6, -1);
   if (!SD.begin(15, SPI, 10000000)) {
-    FastLED.show();  //エラー
+    FastLED.show();  // エラー
     delay(500);
     return;
   } else {
@@ -293,27 +391,33 @@ void setup() {
       delay(100);
     }
   }
-  SD.end();  //一旦ENDしておく
+  SD.end();  // 一旦ENDしておく
 
   if (psramFound()) {
     camera_config.pixel_format = PIXFORMAT_RGB565;
     camera_config.fb_location = CAMERA_FB_IN_PSRAM;
     camera_config.fb_count = 2;
   } else {
-    FastLED.show();  //エラー
+    FastLED.show();  // エラー
     delay(500);
   }
 
   if (!CameraBegin()) {
-    FastLED.show();  //エラー
+    FastLED.show();  // エラー
     delay(1000);
     ESP.restart();
   }
   delay(500);
 
-  LED[0] = CRGB::Blue;  //初期化完了
-  FastLED.setBrightness(200);
-  FastLED.show();
+  // ボタン押しながら起動でディザモード
+  if (!digitalRead(KEY_PIN)) {
+    dither = 1;
+    canvas0.createSprite(240, 176);
+    LED[0] = CRGB::Blue;
+    FastLED.setBrightness(200);
+    FastLED.show();
+  }
+
   delay(500);
   LED[0] = CRGB::LimeGreen;
   FastLED.setBrightness(200);
@@ -323,29 +427,36 @@ void setup() {
 void loop() {
 
   if (!digitalRead(KEY_PIN)) {
-    keyOnTime = millis();  //最後にkey操作した時間
+    keyOnTime = millis();  // 最後にkey操作した時間
     LED[0] = CRGB::Orange;
     FastLED.setBrightness(20);
     FastLED.show();
 
-    CameraGet();  //撮影
+    CameraGet();  // 撮影
 
-    SD.end();  //念のため一旦END
+    SD.end();  // 念のため一旦END
     delay(100);
     SD.begin(15, SPI, 10000000);
 
-    saveToSD_OriginalBMP();  //変換前の画像保存
-    saveGraylevel();         //輝度情報の保存
+    saveToSD_OriginalBMP();  // 変換前の画像保存
+
+    if (dither == 0) {
+      saveGraylevel_fromFb();  // 輝度情報の保存
+    } else {
+      canvas0.pushImage(0, 0, 240, 176, (uint16_t*)fb->buf);  // (x, y, w, h, *data)
+      applyColorBayerDither4x4(canvas0, canvas0, levels);
+      saveGraylevel_fromCanvas(canvas0);
+    }
 
     for (int i = 0; i < maxPalettelndex; i++) {
       currentPalettelndex = i;
-      FastLED.setBrightness(i * 20 + 40);  //処理が進むごとに明るくする
+      FastLED.setBrightness(i * 20 + 40);  // 処理が進むごとに明るくする
       FastLED.show();
-      saveToSD_ConvertBMP();  //変換後の画像保存
+      saveToSD_ConvertBMP();  // 変換後の画像保存
     }
 
-    CameraFree();   //フレームバッファを解放
-    filecounter++;  //連番を更新
+    CameraFree();   // フレームバッファを解放
+    filecounter++;  // 連番を更新
     SD.end();
 
     LED[0] = CRGB::LimeGreen;
