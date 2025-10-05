@@ -1,26 +1,10 @@
-/*
-*******************************************************************************
-* Copyright (c) 2023 by M5Stack
-*                  Equipped with M5Core sample source code
-*                          配套  M5Core 示例源代码
-* Visit for more information: https://docs.m5stack.com/en/core/gray
-* 获取更多资料请访问: https://docs.m5stack.com/zh_CN/core/gray
-*
-* Describe: CardKB.  键盘
-* Date: 2021/8/11
-*******************************************************************************
-  Please connect to Port A(22、21),Read the characters entered by CardKB Unit
-and display them on the screen. 请连接端口A(22、21),读取CardKB
-Unit输入的字符并显示在屏幕上。
-*/
-
 //#include <M5Stack.h>
 #include <M5StickCPlus2.h>
 #include <Wire.h>
 
 M5Canvas canvas(&StickCP2.Display);
 
-#define CARDKB_ADDR 0x5F  // Define the I2C address of CardKB.  定义CardKB的I2C地址
+#define CARDKB_ADDR 0x5F  // Define the I2C address of CardKB.
 
 int g_palletIdx = 0;
 
@@ -46,13 +30,10 @@ int keyMode = e_keyModeNone;
 
 void keyCheck(void* arg ) {
     while(1) {
-        Wire.requestFrom(
-            CARDKB_ADDR,
-            1);  // Request 1 byte from the slave device.  向从设备请求1字节
-        while (
-            Wire.available())  // If received data is detected.  如果检测到收到数据
+        Wire.requestFrom( CARDKB_ADDR, 1 );
+        while ( Wire.available() )
         {
-            char c = Wire.read();  // Store the received data.  将接收到的数据存储
+            char c = Wire.read();  // 1Byte読み込む
             if (c != 0) {
                 switch(c) {
                     case 'p':
@@ -212,6 +193,7 @@ void getPallete(int palletIdx = 0) {
 }
 
 void setup() {
+    // put your setup code here, to run once:
     vcolorIdx.clear();
     Serial.begin(19200);                           // シリアルコンソール開始
     while(!Serial) delay(10);
@@ -222,13 +204,12 @@ void setup() {
     }
     Wire.begin();
 
-    // put your setup code here, to run once:
-    auto cfg = M5.config();
+     auto cfg = M5.config();
     StickCP2.begin(cfg);
-    StickCP2.Power.begin();       // Init power  初始化电源模块
+    StickCP2.Power.begin();
     StickCP2.Display.setRotation(1);
     StickCP2.Display.setFont(&lgfxJapanGothic_24);
-    StickCP2.Display.setTextSize(1);  // Set the text size to 2.  设置文字大小为2
+    StickCP2.Display.setTextSize(1);
 
     canvas.setColorDepth(4);
     canvas.createSprite(M5.Lcd.width(), M5.Lcd.height());
@@ -277,6 +258,7 @@ void drawImage(std::vector<uint32_t> v) {
     for(int i = 0 ; i  < vcolorIdx.size() ; i++ ) {
         int x = i % 64;
         int y = i / 64;
+        //canvas.drawPixel(dx+x, dy+y, vcolorIdx[i]);
         canvas.fillRect(dx+x*2, dy+y*2, 2, 2, vcolorIdx[i]); //枠だけ left, top, witdh, height
     }
 
@@ -352,7 +334,6 @@ void loop() {
             StickCP2.Display.print(vcolorIdx.size());
             StickCP2.Display.print(cTime);
             StickCP2.Display.println("");
-            delay(3000);
 
             // メモリ内に描画した画面を一括出力（チラツキなし）-------------------------------------------------------
             canvas.fillSprite(BLACK);
