@@ -1,80 +1,116 @@
-#include <esp_camera.h>
-#include <FastLED.h>
-#include <SPI.h>
-#include <SD.h>
+//#include <M5AtomS3.h>
 #include <M5Unified.h>
+#include <Arduino.h>
+#include "camera_pins.h"
+#include <esp_camera.h>
+#include <SPI.h>
+#include "FS.h"
+#include "SD.h"
+#include <Wire.h>
+#include <ArduinoJson.h>
+#include <ArduinoJson.hpp>
+#include "WiFi.h"
+#include "..\wifi_setting\M5_wifi.h"
 
-#define KEY_PIN 1
-#define LED_PIN 2
+//#define LED_PIN 2
 #define POWER_GPIO_NUM 18
 
-CRGB LED[1];
+// 切り出す画像のサイズ
+const int crop_width = 128;
+const int crop_height = 128;
+
+const int icon_width = 64;
+const int icon_height = 64;
+
 camera_fb_t* fb;
+uint8_t crop_data[crop_width][crop_height];
 
 M5Canvas canvas0;
+M5Canvas canvas1;
 
-// SDカード保存用
-char filename[64];
+const char *ssid = M5_DEV_SSID;
+const char *pass = M5_PASSWORD;
+#define USEPORT 8888
+int status = WL_IDLE_STATUS;
+WiFiServer server(USEPORT); // 80番ポート(http)
+WiFiClient client;
+
+// Atomic TFCard Base のピン配置に合わせて定義
+//#define SCK_PIN   5
+//#define MISO_PIN  7
+//#define MOSI_PIN  6
+//#define CS_PIN    8
+#define SCK_PIN   7
+#define MISO_PIN  8
+#define MOSI_PIN  6
+#define CS_PIN    39
+
+std::vector<std::vector<uint32_t>> vcolor_palette;
+
+#define MENU_MAX 4
+#define PALLETE_MAX 10
+
+int iMenuIconCnt = 0;
+int iPaletteCnt = 0;
+
+uint32_t keyOnTime = 0;             // キースイッチを操作した時間
 int filecounter = 1;
-uint8_t graydata[240 * 176];  // HQVGAが今のところ最適
 
-// 最大8色のカラーパレット
-uint32_t ColorPalettes[8][8] = {
-  { // パレット0 slso8
-    0x0D2B45, 0x203C56, 0x544E68, 0x8D697A, 0xD08159, 0xFFAA5E, 0xFFD4A3, 0xFFECD6 },
-  { // パレット1 都市伝説解体センター風
-    0x000000, 0x000B22, 0x112B43, 0x437290, 0x437290, 0xE0D8D1, 0xE0D8D1, 0xFFFFFF },
-  { // パレット2 ファミレスを享受せよ風
-    0x010101, 0x33669F, 0x33669F, 0x33669F, 0x498DB7, 0x498DB7, 0xFBE379, 0xFBE379 },
-  { // パレット3 gothic-bit
-    0x0E0E12, 0x1A1A24, 0x333346, 0x535373, 0x8080A4, 0xA6A6BF, 0xC1C1D2, 0xE6E6EC },
-  { // パレット4 noire-truth
-    0x1E1C32, 0x1E1C32, 0x1E1C32, 0x1E1C32, 0xC6BAAC, 0xC6BAAC, 0xC6BAAC, 0xC6BAAC },
-  { // パレット5 2BIT DEMIBOY
-    0x252525, 0x252525, 0x4B564D, 0x4B564D, 0x9AA57C, 0x9AA57C, 0xE0E9C4, 0xE0E9C4 },
-  { // パレット6 deep-maze
-    0x001D2A, 0x085562, 0x009A98, 0x00BE91, 0x38D88E, 0x9AF089, 0xF2FF66, 0xF2FF66 },
-  { // パレット7 night-rain
-    0x000000, 0x012036, 0x3A7BAA, 0x7D8FAE, 0xA1B4C1, 0xF0B9B9, 0xFFD159, 0xFFFFFF },
+#define ATOM_ADDR 0x4B
+#define STX 0x02
+#define ETX 0x03
+
+// I2Cマスターからの受信
+enum CommandType {
+  CMD_NONE = 0,
+  CMD_GET_ATOMINFO,
+  CMD_GET_PALETTE,
+  CMD_GET_ICON,
+  CMD_SHOT,
+  CMD_GET_PHOTO,
+  CMD_GET_PHOTO_LIST,
+};
+volatile uint8_t cmdType = CMD_NONE;
+volatile uint8_t paletteIdx = 0;
+volatile uint8_t iconIdx = 0;
+String  photoName = "";
+
+enum SlaveState {
+  STATE_IDLE,
+  STATE_PROCESSING,
+  STATE_READY_TO_SEND
 };
 
-int currentPalettelndex = 0;  // 現在のパレットのインデックス
-int maxPalettelndex = 8;      // パレット総数
-
-// TailBATを使用しているとき、消費電流が45mA以下だと電源がシャットダウンしてしまう対策
-uint32_t LED_ON_DURATION = 120000;  // LED 点灯時間 (ミリ秒)
-uint32_t keyOnTime = 0;             // キースイッチを操作した時間
-
-int dither = 0;  // 0 = ディザ未使用 1 = ディザ使用
-int levels = 8;  // ディザ階調数 2以上
-
+volatile uint8_t dataState = STATE_IDLE;
+String i2CSendData = "";
 camera_config_t camera_config = {
-  .pin_pwdn = -1,
-  .pin_reset = -1,
-  .pin_xclk = 21,
-  .pin_sscb_sda = 12,
-  .pin_sscb_scl = 9,
-  .pin_d7 = 13,
-  .pin_d6 = 11,
-  .pin_d5 = 17,
-  .pin_d4 = 4,
-  .pin_d3 = 48,
-  .pin_d2 = 46,
-  .pin_d1 = 42,
-  .pin_d0 = 3,
+  .pin_pwdn     = PWDN_GPIO_NUM,
+  .pin_reset    = RESET_GPIO_NUM,
+  .pin_xclk     = XCLK_GPIO_NUM,
+  .pin_sscb_sda = SIOD_GPIO_NUM,
+  .pin_sscb_scl = SIOC_GPIO_NUM,
+  .pin_d7       = Y9_GPIO_NUM,
+  .pin_d6       = Y8_GPIO_NUM,
+  .pin_d5       = Y7_GPIO_NUM,
+  .pin_d4       = Y6_GPIO_NUM,
+  .pin_d3       = Y5_GPIO_NUM,
+  .pin_d2       = Y4_GPIO_NUM,
+  .pin_d1       = Y3_GPIO_NUM,
+  .pin_d0       = Y2_GPIO_NUM,
 
-  .pin_vsync = 10,
-  .pin_href = 14,
-  .pin_pclk = 40,
+  .pin_vsync = VSYNC_GPIO_NUM,
+  .pin_href  = HREF_GPIO_NUM,
+  .pin_pclk  = PCLK_GPIO_NUM,
 
   .xclk_freq_hz = 20000000,
   .ledc_timer = LEDC_TIMER_0,
   .ledc_channel = LEDC_CHANNEL_0,
 
   .pixel_format = PIXFORMAT_RGB565,
-  .frame_size = FRAMESIZE_HQVGA,
+  .frame_size = FRAMESIZE_QCIF,
   // FRAMESIZE_96X96,    // 96x96
   // FRAMESIZE_QQVGA,    // 160x120
+  // FRAMESIZE_128X128,  // 128x128
   // FRAMESIZE_QCIF,     // 176x144
   // FRAMESIZE_HQVGA,    // 240x176
   // FRAMESIZE_240X240,  // 240x240
@@ -84,55 +120,278 @@ camera_config_t camera_config = {
   .fb_count = 2,
   .fb_location = CAMERA_FB_IN_PSRAM,
   .grab_mode = CAMERA_GRAB_LATEST,
-  .sccb_i2c_port = 0,
+  .sccb_i2c_port =1,
 };
 
-bool loadPaletteFromSD(int paletteIndex) {
-  if (paletteIndex < 0 || paletteIndex > 7) {
-    return false;
-  }
-
-  // ファイル名を生成 (例: /ColorPalette0.txt)
-  String filename = "/ColorPalette" + String(paletteIndex) + ".txt";
-
-  // ファイルが存在するか確認
-  if (!SD.exists(filename)) {
-    return false;  // ファイルが存在しない場合はデフォルトを使うのでfalseを返す
-  }
-
-  // ファイルを開く
-  File file = SD.open(filename, FILE_READ);
-  if (!file) {
-    return false;  // ファイルオープン失敗
-  }
-
-  // ファイルから8つのカラーコードを読み込む
-  int colorCount = 0;
-  while (file.available() && colorCount < 8) {
-    String line = file.readStringUntil('\n');  // 1行読み込む
-    line.trim();                               // 前後の空白や改行文字を削除
-
-    if (line.length() > 0) {
-      // strtoul(const char *str, char **endptr, int base)
-      // base=0 で 0x (16進), 0 (8進), それ以外 (10進) を自動判別
-      uint32_t colorValue = strtoul(line.c_str(), NULL, 0);
-
-      // エラーチェック (strtoulはエラー時に0を返すことがあるが、0x000000も有効な色なので完全ではない)
-      // ここでは単純に読み込んだ値を格納する
-      ColorPalettes[paletteIndex][colorCount] = colorValue;
-      colorCount++;
+void onReceived( int len ) {
+  bool inPacket = false;
+  String i2cRecieve = "";
+  while( Wire.available() ){
+    char c = (char)Wire.read();
+    if (inPacket) {
+      if (c == ETX) {
+        // 受信完了
+        inPacket = false;
+        break;
+      } else {
+        i2cRecieve += c;
+      }
+    } else if( c == STX ) {
+      // 受信開始
+      inPacket = true;
     }
   }
 
-  file.close();  // ファイルを閉じる
-
-  // 8色読み込めたか確認
-  if (colorCount == 8) {
-    return true;  // 成功
-  } else {
-    // もし8色以下の場合は読み込めた分だけ反映して残りはデフォルトを使用する
-    return false;  // 読み込み失敗（色が足りない）
+  // データ処理中はコマンド受信しても無視する
+  if( dataState == STATE_PROCESSING ) {
+    return;
   }
+
+  if(i2cRecieve.compareTo("doShot") == 0 ){
+    cmdType = CMD_SHOT;
+    dataState = STATE_PROCESSING;
+  
+  } else if(i2cRecieve.indexOf("GetPalette") != -1) {
+    // カラーパレット取得
+    String strIdx = i2cRecieve;
+    strIdx.replace("GetPalette", "");
+    strIdx.trim();
+    int iIdx = strIdx.toInt();
+    if( iIdx > iPaletteCnt ) iIdx = 0;
+    cmdType = CMD_GET_PALETTE;
+    paletteIdx = iIdx;
+    dataState = STATE_PROCESSING;
+  } else if(i2cRecieve.indexOf("GetIcon") != -1) {
+    // カラーパレット取得
+    String strIdx = i2cRecieve;
+    strIdx.replace("GetIcon", "");
+    strIdx.trim();
+    int iIdx = strIdx.toInt();
+    if( iIdx > iMenuIconCnt ) iIdx = 0;
+    cmdType = CMD_GET_ICON;
+    iconIdx = iIdx;
+    dataState = STATE_PROCESSING;
+  } else if(i2cRecieve.compareTo("GetAtomInfo") == 0) {
+    // AtomS3Rの情報取得
+    cmdType = CMD_GET_ATOMINFO;
+    dataState = STATE_PROCESSING;
+  } else {
+    cmdType = CMD_NONE;
+  }
+}
+
+void onRequest() {
+  auto sendI2C = [](String s) {
+    Wire.write(STX);
+    Wire.print(s);
+    Wire.write(ETX);
+  };
+  if(dataState == STATE_READY_TO_SEND) {
+    String sendData = i2CSendData;
+    sendI2C(sendData);
+    cmdType = CMD_NONE;
+    dataState = STATE_IDLE;
+    i2CSendData = "";
+  } else {
+    if(cmdType == CMD_NONE) {
+      sendI2C("NoCommand");
+    } else {
+      sendI2C("busy");
+    } 
+  }
+}
+
+uint32_t rgb565_to_rgb888(uint16_t color) {
+  uint8_t r = (color >> 11) & 0x1F;
+  uint8_t g = (color >> 5) & 0x3F;
+  uint8_t b = color & 0x1F;
+  r = (r * 255 + 15) / 31;
+  g = (g * 255 + 31) / 63;
+  b = (b * 255 + 15) / 31;
+  return (r << 16) | (g << 8) | b;
+}
+
+// パレット内で最も近い色を探す
+std::pair<uint32_t, uint8_t> findClosestColor(uint32_t originalColor) {
+  uint8_t r1 = (originalColor >> 16) & 0xff;
+  uint8_t g1 = (originalColor >> 8) & 0xff;
+  uint8_t b1 = originalColor & 0xFF;
+
+  uint32_t closestColor = vcolor_palette[paletteIdx][0];
+  uint8_t closestIndex = 0;
+  long minDistance = -1;
+
+  for (int i = 0; i < vcolor_palette[paletteIdx].size(); i++) {
+    uint8_t r2 = (vcolor_palette[paletteIdx][i] >> 16) & 0xff;
+    uint8_t g2 = (vcolor_palette[paletteIdx][i] >> 8) & 0xff;
+    uint8_t b2 = vcolor_palette[paletteIdx][i] & 0xff;
+    
+    // RGB空間でのユークリッド距離の2乗を計算
+    long distance = pow(r1 - r2, 2) + pow(g1 - g2, 2) + pow(b1 - b2, 2);
+
+    if (minDistance==-1 || distance < minDistance) {
+      minDistance = distance;
+      closestColor = vcolor_palette[paletteIdx][i];
+      closestIndex = i;
+    }
+  }
+  return std::make_pair(closestColor, closestIndex);
+}
+
+std::vector<uint8_t> originalToPalette() {
+  std::vector<uint8_t> v;
+  const int bayer4x4[4][4] = {
+    { -8,  0, -6,  2 },
+    {  4, -4,  6, -2 },
+    { -5,  3, -7,  1 },
+    {  7, -1,  5, -3 }
+  };
+  // 元画像はRGB565 (1ピクセル2バイト)
+  uint16_t *src_pixels = (uint16_t*)fb->buf;
+
+  int src_width = fb->width;
+  int src_height = fb->height;
+
+  /* --- 中央クロップと減色処理 --- */
+  /* 中央を切り出すための開始座標を計算 */
+  int crop_start_x = (src_width - crop_width) / 2;
+  int crop_start_y = (src_height - crop_height) / 2;
+
+  memset(crop_data, 0, sizeof(uint8_t) * 128 * 128);
+  canvas0.pushImage(0, 0, src_width, src_height, (uint16_t*)src_pixels);
+  for (int y = 0; y < crop_height; y++) {
+    for (int x = 0; x < crop_width; x++) {
+      // 元画像から対応するピクセル座標を計算
+      int src_x = crop_start_x + x;
+      int src_y = crop_start_y + y;
+      
+      // 元画像のピクセル色(RGB565)を取得
+      uint16_t src_color_565 = src_pixels[src_y * src_width + src_x];
+      
+      // RGB888に変換して、パレットの最も近い色を探す
+      // uint32_t src_color_888 = rgb565_to_rgb888(src_color_565);
+      uint32_t src_color_888 = canvas0.color16to24(src_color_565);
+      int r,g,b;
+      r = (src_color_888 >> 16) & 0xff;
+      g = (src_color_888 >> 8) & 0xff;
+      b = (src_color_888) & 0xff;
+
+      int threshold = bayer4x4[y%4][x%4];
+      r = constrain(r+threshold, 0, 255);
+      g = constrain(g+threshold, 0, 255);
+      b = constrain(b+threshold, 0, 255);
+      uint32_t dst_color_888 = (r << 16) | (g << 8) | b;
+
+      std::pair<uint32_t, uint8_t> pair = findClosestColor(dst_color_888);
+      crop_data[y][x] = pair.second;
+    }
+  }
+  canvas0.clearDisplay(BLACK);
+  // カメラUSBポート下側の画像が撮れるので、90度回転させる
+  for (int y = 0; y < crop_height; y++) {
+    for (int x = 0; x < crop_width; x++) {
+      v.push_back(crop_data[x][crop_height -1 -y]);
+    }
+  }
+  return v;
+}
+
+std::vector<uint8_t> IconToPalette() {
+  std::vector<uint8_t> v;
+  char png_path[64];
+  memset(png_path, 0, 64);
+  sprintf(png_path, "/ICON/%d.png", iconIdx);
+#if 1
+  File pngFile = SD.open(png_path, "r"); // まずファイルを開く
+  if (!pngFile) {
+    Serial.printf("Error: Failed to open %s for reading.\n", png_path);
+    return v;
+  }
+  size_t png_data_size = pngFile.size();
+  uint8_t* png_data_buffer = (uint8_t*)heap_caps_malloc(png_data_size, MALLOC_CAP_SPIRAM);
+  
+  if (!png_data_buffer) {
+    Serial.println("Failed to allocate buffer for PNG data");
+    pngFile.close();
+    return v;
+  }
+
+  // 3. ファイルの内容を全てバッファに読み込む
+  pngFile.read(png_data_buffer, png_data_size);
+  pngFile.close(); // ファイルはすぐに閉じる
+
+  uint16_t* pixel_buffer = nullptr;
+  pixel_buffer = (uint16_t*)heap_caps_malloc(icon_width * icon_height * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+  if (!pixel_buffer) {
+    Serial.println("Failed to allocate pixel buffer");
+    heap_caps_free(png_data_buffer);
+    pngFile.close();
+    return v;
+  }
+
+  canvas1.createSprite(icon_width, icon_height); // png読み込み用スプライト
+  canvas1.drawPng(png_data_buffer, png_data_size, 0, 0);
+  heap_caps_free(png_data_buffer);
+#else
+  uint16_t* pixel_buffer = nullptr;
+  pixel_buffer = (uint16_t*)heap_caps_malloc(icon_width * icon_height * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+  if (!pixel_buffer) {
+    Serial.println("Failed to allocate pixel buffer");
+    return v;
+  }
+
+  canvas1.createSprite(icon_width, icon_height); // png読み込み用スプライト
+  canvas1.drawBmpFile(SD, png_path, 0, 0);
+#endif
+  canvas1.readRect(0, 0, icon_width, icon_height, pixel_buffer); // ピクセルデータに変換
+
+  for (int y = 0; y < icon_height; y++) {
+    for (int x = 0; x < icon_width; x++) {
+      // 元画像から対応するピクセル座標を計算
+      // 元画像のピクセル色(RGB565)を取得
+      uint16_t src_color_565 = pixel_buffer[y * icon_width + x];
+      
+      // RGB888に変換して、パレットの最も近い色を探す
+      //uint32_t src_color_888 = rgb565_to_rgb888(src_color_565);
+      uint32_t src_color_888 = canvas1.color16to24(src_color_565);
+
+      std::pair<uint32_t, uint8_t> pair = findClosestColor(src_color_888);
+      v.push_back(pair.second);
+    }
+  }
+  canvas1.deleteSprite();  // png読み込み用スプライト解放
+  heap_caps_free(pixel_buffer);
+  return v;
+}
+
+void sendImage(std::vector<uint8_t> v) {
+  client = server.available();
+  if (!client) {
+    Serial.println("client not found");
+    return;
+  }
+
+  DynamicJsonDocument doc(v.size()); // 念のため少し余裕を持たせる
+  doc["Type"] = "ICON";
+  JsonArray dataArray = doc.createNestedArray("data");
+  uint32_t compData=0x0;
+  for(int i = 0 ; i < v.size() ; i++) {
+      uint8_t shift = i % 8;
+      compData |= v[i] << (shift * 4);
+      if(shift == 7) {
+        dataArray.add(compData);
+        compData = 0x0;
+      }
+  }
+
+  String jsonString;
+  jsonString.reserve(v.size()); 
+  int jsonLen = serializeJson(doc, jsonString);
+  Serial.printf("Sending JSON (%dbytes)...\n", jsonLen);
+  client.println(jsonString);
+
+//  client.stop();
+//  Serial.println("Client disconnected");
 }
 
 bool CameraBegin() {
@@ -168,7 +427,12 @@ bool CameraFree() {
 }
 
 void saveToSD_OriginalBMP() {
-  sprintf(filename, "/%010d_%04d_Original.bmp", keyOnTime, filecounter);
+  char filename[64];
+  memset(filename, 0, 64);
+  sprintf(filename, "/Original/%010d_%04d_Original.bmp", keyOnTime, filecounter);
+  if (!SD.exists("/Original/")) {
+    SD.mkdir("/Original/");
+  }
   File file = SD.open(filename, "w");
   if (file) {
     uint8_t* out_bmp = NULL;
@@ -178,17 +442,21 @@ void saveToSD_OriginalBMP() {
     file.close();
     free(out_bmp);
   } else {
-    LED[0] = CRGB::Red;
-    FastLED.show();  //Error!
+    Serial.printf("Failed to save %s\n", filename);
   }
 }
 
-void saveToSD_ConvertBMP() {
-  sprintf(filename, "/%010d_%04d_palette%01d.bmp", keyOnTime, filecounter, currentPalettelndex);
+void saveToSD_ConvertBMP(std::vector<uint8_t> v) {
+  char filename[64];
+  memset(filename, 0, 64);
+  sprintf(filename, "/Palette/%010d_%04d_palette%01d.bmp", keyOnTime, filecounter, paletteIdx);
+  if (!SD.exists("/Palette/")) {
+    SD.mkdir("/Palette/");
+  }
   File file = SD.open(filename, "w");
   if (file) {
-    int width = fb->width;
-    int height = fb->height;
+    int width = crop_width;
+    int height = crop_height;
     int rowSize = (3 * width + 3) & ~3;
 
     lgfx::bitmap_header_t bmpheader;
@@ -214,11 +482,11 @@ void saveToSD_ConvertBMP() {
       for (int x = 0; x < width; x++) {
 
         //グレイデータを読み出す
-        int i_gray = y * width + x;
-        uint8_t gray = graydata[i_gray];
+        int i_palette = y * width + x;
+        uint8_t colorIdx = v[i_palette];
 
         //カラーパレットから色を取得
-        uint32_t newColor = ColorPalettes[currentPalettelndex][gray];
+        uint32_t newColor = vcolor_palette[paletteIdx][colorIdx];
         uint8_t r = (newColor >> 16) & 0xFF;
         uint8_t g = (newColor >> 8) & 0xFF;
         uint8_t b = newColor & 0xFF;
@@ -233,240 +501,322 @@ void saveToSD_ConvertBMP() {
     }
     file.close();
   } else {
-    LED[0] = CRGB::Red;
-    FastLED.show();  //Error!
+    Serial.printf("Failed to save %s\n", filename);
   }
 }
 
-void saveGraylevel_fromFb() {
-  uint8_t* fb_data = fb->buf;
-  int width = fb->width;
-  int height = fb->height;
-  int i = 0;
+// ファイルとディレクトリを一覧表示する関数
+int listFiles(fs::FS &fs, const char * dirname, int levels) {
+  int fileCnt = 0;
+  Serial.printf("Listing directory: %s\n", dirname);
 
-  for (int y = 0; y < height; y++) {
-    for (int x = 0; x < (width * 2); x = x + 2) {
+  File root = fs.open(dirname);
+  if (!root) {
+    Serial.println("Failed to open directory");
+    return fileCnt;
+  }
+  if (!root.isDirectory()) {
+    Serial.println("Not a directory");
+    return fileCnt;
+  }
 
-      // 各ピクセルの色を取得
-      uint32_t rgb565Color = (fb_data[y * width * 2 + x] << 8) | fb_data[y * width * 2 + x + 1];
-
-      // RGB565からRGB888へ変換
-      uint32_t rgb888Color = canvas0.color16to24(rgb565Color);
-      uint8_t r = (rgb888Color >> 16) & 0xFF;
-      uint8_t g = (rgb888Color >> 8) & 0xFF;
-      uint8_t b = rgb888Color & 0xFF;
-
-      // 輝度の計算 BT.709の係数を使用
-      uint16_t luminance = (uint16_t)(0.2126 * r + 0.7152 * g + 0.0722 * b);
-
-      // 輝度を8階調のグレースケールに変換
-      uint8_t grayLevel = luminance / 32;  // 256/32 = 8
-
-      // 輝度情報を保存
-      graydata[i] = grayLevel;
-      i++;
+  File file = root.openNextFile();
+  while (file) {
+    for (int i = 0; i < levels; i++) {
+      Serial.print("  "); // インデント
     }
-  }
-}
-
-void saveGraylevel_fromCanvas(M5Canvas& srcSprite) {
-  int width = srcSprite.width();
-  int height = srcSprite.height();
-  int i = 0;
-
-  for (int y = 0; y < height; y++) {
-    for (int x = 0; x < width; x++) {
-
-      // 各ピクセルの色を取得
-      uint32_t rgb565Color = srcSprite.readPixel(x, y);
-
-      // RGB565からRGB888へ変換
-      uint32_t rgb888Color = srcSprite.color16to24(rgb565Color);
-      uint8_t r = (rgb888Color >> 16) & 0xFF;
-      uint8_t g = (rgb888Color >> 8) & 0xFF;
-      uint8_t b = rgb888Color & 0xFF;
-
-      // 輝度の計算 BT.709の係数を使用
-      uint16_t luminance = (uint16_t)(0.2126 * r + 0.7152 * g + 0.0722 * b);
-
-      // 輝度を16階調のグレースケールに変換
-      uint8_t grayLevel = luminance / 32;  // 256/32 = 8
-
-      // 輝度情報を保存
-      graydata[i] = grayLevel;
-      i++;
+    if (file.isDirectory()) {
+      Serial.print("DIR : ");
+      Serial.println(file.name());
+      // 再帰的にサブディレクトリも表示
+      fileCnt += listFiles(fs, file.path(), levels + 1);
+    } else {
+      Serial.print("FILE: ");
+      Serial.print(file.name());
+      Serial.print("\tSIZE: ");
+      Serial.println(file.size());
+      fileCnt++;
     }
+    file = root.openNextFile();
   }
+  return fileCnt;
 }
 
-void applyColorBayerDither4x4(M5Canvas& srcSprite, M5Canvas& dstSprite, int levelsPerChannel) {
+void jsonLoad() {
+  String filename = "/setting/color.json";
+  int iconCnt = 0;
+  bool bRead = false;
+  bool bSDbegin = false;
+  uint8_t* readBuf = NULL;
 
-  // Bayerマトリックス
-  static const uint8_t bayer4x4[4][4] = {
-    { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 }
-  };
-  static const float bayerDivisor = 16.0f;
+#if 1
+  Serial.println("SD.begin");
+//  if (!SD.begin(CS_PIN, SPI, 1000000UL)) {
+  if(1){
+    bSDbegin = true;
+    delay(10);
+    uint8_t cardType = SD.cardType();
 
-  int width = dstSprite.width();
-  int height = dstSprite.height();
-  float step = 255.0f / (float)(levelsPerChannel - 1);
+    Serial.print("SD Card Type: ");
+    if(cardType == CARD_MMC){
+        Serial.println("MMC");
+    } else if(cardType == CARD_SD){
+        Serial.println("SDSC");
+    } else if(cardType == CARD_SDHC){
+        Serial.println("SDHC");
+    } else if(cardType == CARD_NONE){
+        Serial.println("No SD card attached");
+    } else {
+        Serial.println("UNKNOWN");
+    }
 
-  for (int y = 0; y < height; ++y) {
-    for (int x = 0; x < width; ++x) {
+    uint64_t cardSize = SD.cardSize() / (1024 * 1024);
+    Serial.printf("SD Card Size: %lluMB\n", cardSize);
 
-      if (x >= srcSprite.width() || y >= srcSprite.height()) {
-        dstSprite.drawPixel(x, y, TFT_BLACK);
-        continue;
-      }
+    Serial.println("file check");
+    filecounter = listFiles(SD, "/Palette", 0);
+    iconCnt = listFiles(SD, "/ICON", 0);
+    iMenuIconCnt = iconCnt;
+    // ファイルが存在するか確認
+    if (!SD.exists(filename)) {
+      Serial.println("File not Found");
+      goto GETSETTING_FAIL;
+    }
 
-      // 元画像のピクセル色を取得
-      uint32_t rgb565Color = srcSprite.readPixel(x, y);
-      uint32_t originalColorValue = srcSprite.color16to24(rgb565Color);
-      uint8_t r_src = (originalColorValue >> 16) & 0xFF;
-      uint8_t g_src = (originalColorValue >> 8) & 0xFF;
-      uint8_t b_src = originalColorValue & 0xFF;
+    Serial.println("File open");
+    // ファイルを開く
+    File file = SD.open(filename, FILE_READ);
+    if (!file) {
+      Serial.println("File open fail");
+      goto GETSETTING_FAIL;
+    }
 
-      // 各チャンネルに対してディザリングを適用
-      uint8_t r_dst, g_dst, b_dst;
-      uint8_t channels_src[3] = { r_src, g_src, b_src };
-      uint8_t channels_dst[3];
-      float bayerThreshold = (float)bayer4x4[y % 4][x % 4] / bayerDivisor;
+    Serial.println("File read");
+    int size = file.size();
+    readBuf = (uint8_t*)malloc(size);
+    file.read(readBuf, size);
 
-      for (int ch = 0; ch < 3; ++ch) {
-        uint8_t val_src = channels_src[ch];
-        int level_index = floor((float)val_src / step);
-        if (level_index >= levelsPerChannel - 1) { level_index = levelsPerChannel - 2; }
-        float level_low = (float)level_index * step;
-        float error = (float)val_src - level_low;
-        float normalized_error = (step > 0) ? (error / step) : 0.0f;
-        if (normalized_error < 0.0f) normalized_error = 0.0f;
-        if (normalized_error > 1.0f) normalized_error = 1.0f;
-
-        uint8_t val_dst;
-        if (normalized_error >= bayerThreshold) {
-          val_dst = (uint8_t)round(((float)level_index + 1.0f) * step);
-        } else {
-          val_dst = (uint8_t)round(level_low);
+    DynamicJsonDocument doc(size+100);
+    DeserializationError error = deserializeJson(doc, readBuf);
+    if(error) {
+      Serial.println("deserializeJson fail");
+      goto GETSETTING_FAIL;
+    } else {
+      Serial.println("deserializeJson OK");
+      JsonObject root = doc.as<JsonObject>();
+      for (JsonPair pair : root) {
+        const char* key = pair.key().c_str(); // キー取得
+        Serial.println(key);
+        if (pair.value().is<JsonArray>()) {
+          JsonArray colorArray = pair.value().as<JsonArray>();
+          std::vector<uint32_t> v;
+          for(int i = 0 ; i < colorArray.size() ; i++) {
+            char c[16] = {0};
+            const char* c_str_ptr = colorArray[i].as<const char*>();
+            char* endptr;
+            uint32_t num = strtoul(c_str_ptr, &endptr, 16);
+            if (c_str_ptr != endptr && *endptr == '\0') {
+            } else {
+                num = 0;
+            }
+            v.push_back(num);
+            Serial.printf("%06x ", num);
+          }
+          Serial.println("");
+          vcolor_palette.push_back(v);
         }
-        channels_dst[ch] = std::max(0, std::min(255, (int)val_dst));
       }
-
-      r_dst = channels_dst[0];
-      g_dst = channels_dst[1];
-      b_dst = channels_dst[2];
-
-      // 新しいRGB値で出力先スプライトに描画
-      uint16_t ditheredColor = dstSprite.color565(r_dst, g_dst, b_dst);
-      dstSprite.drawPixel(x, y, ditheredColor);
+      if(vcolor_palette.size() > 0) {
+        bRead = true;
+      }
     }
-    // delay(0);
+//    SD.end();
+  } else {
+//    Serial.println("SD.begin fail");
   }
+  
+#endif
+
+GETSETTING_FAIL:
+  if(!bRead) {
+    uint32_t default_colors[2][16] = {
+      {
+        0x000000, 0x808080, 0xc0c0c0, 0xffffff,
+        0xff0000, 0xffff00, 0x00ff00, 0x00ffff,
+        0x0000ff, 0xff00ff, 0x800000, 0x808000,
+        0x008000, 0x008080, 0x000080, 0x800080
+      },
+      {
+        0xFADBC0,0xF8CFAF,0xE6B093,0xD38A6B,
+        0x2C3E50,0x3E566B,0x4A6C88,0x7395AE,
+        0xE74C3C,0xD94436,0xC0392B,0xA32E22,
+        0xF1C40F,0xF39C12,0xE67E22,0xFFFFFF
+      },
+    };
+    
+    for(int i = 0 ; i < 2 ; i++) {
+      std::vector<uint32_t> v;
+      for(int j = 0 ; j < 16 ; j++ ) {
+        v.push_back(default_colors[i][j]);
+
+      }
+      vcolor_palette.push_back(v);
+    }
+  }
+
+  iPaletteCnt = vcolor_palette.size();
+  if(readBuf) free(readBuf);
+  return;
 }
 
 void setup() {
-  M5.begin();
-  pinMode(POWER_GPIO_NUM, OUTPUT);
-  digitalWrite(POWER_GPIO_NUM, LOW);
+  // put your setup code here, to run once:
+  Serial.begin(19200);                           // シリアルコンソール開始
+  while(!Serial) delay(10);
   delay(500);
 
-  pinMode(KEY_PIN, INPUT_PULLUP);
-  FastLED.addLeds<SK6812, LED_PIN, GRB>(LED, 1);
-  LED[0] = CRGB::Red;
-  FastLED.setBrightness(200);
+  //auto cfg = M5.config();
+  //M5.begin(cfg);
+  M5.begin();
 
-  // 一度SDカードをマウントして確認
-  SPI.begin(7, 8, 6, -1);
-  if (!SD.begin(15, SPI, 10000000)) {
-    FastLED.show();  // エラー
+  pinMode(POWER_GPIO_NUM, OUTPUT);
+  digitalWrite(POWER_GPIO_NUM, LOW);
+  Wire1.end();
+  delay(500);
+
+  Serial.println("SPI.begin");
+  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, -1);
+  while (false == SD.begin(SD.begin(CS_PIN, SPI, 1000000UL))) {
+    Serial.println("SD Wait...");
     delay(500);
-    return;
-  } else {
-    // パレット0から7までループ
-    for (int i = 0; i < 8; i++) {
-      if (loadPaletteFromSD(i)) {
-        //M5.Display.printf("Palette %d loaded from SD.\n", i);
-      } else {
-        //M5.Display.printf("Palette %d use default.\n", i);
-      }
-      delay(100);
-    }
   }
-  SD.end();  // 一旦ENDしておく
 
+  jsonLoad();
+  SD.end();
+
+  Serial.println("PSRAM Check");
   if (psramFound()) {
     camera_config.pixel_format = PIXFORMAT_RGB565;
     camera_config.fb_location = CAMERA_FB_IN_PSRAM;
     camera_config.fb_count = 2;
   } else {
-    FastLED.show();  // エラー
     delay(500);
   }
 
+  Serial.println("CameraBegin");
+  Wire1.end();
+
   if (!CameraBegin()) {
-    FastLED.show();  // エラー
+    Serial.println("CameraBegin Fail");
     delay(1000);
-    ESP.restart();
+  } else {
+    Serial.println("CameraBegin Success");
   }
   delay(500);
 
-  // ボタン押しながら起動でディザモード
-  if (!digitalRead(KEY_PIN)) {
-    dither = 1;
-    canvas0.createSprite(240, 176);
-    LED[0] = CRGB::Blue;
-    FastLED.setBrightness(200);
-    FastLED.show();
-  }
+  WiFi.softAP(ssid,pass);
+  IPAddress myIP = WiFi.softAPIP();
+  Serial.println(myIP);
+  server.begin();
 
+  Wire.begin(ATOM_ADDR);
+  Wire.onReceive( onReceived );
+  Wire.onRequest( onRequest );
   delay(500);
-  LED[0] = CRGB::LimeGreen;
-  FastLED.setBrightness(200);
-  FastLED.show();
+
+  canvas0.createSprite(176, 144);
+  Serial.println("Setup End");
 }
 
 void loop() {
+  // put your main code here, to run repeatedly:
+  if(cmdType == CMD_GET_ATOMINFO) {
+    Serial.println("CMD_GET_ATOMINFO");
+    StaticJsonDocument<200> doc;
+    IPAddress myIP = WiFi.softAPIP();
+    doc["ssid"] = myIP;
+    doc["port"] = USEPORT;
+    doc["menuCnt"] = iMenuIconCnt;
+    doc["paletteCnt"] = iPaletteCnt;
 
-  if (!digitalRead(KEY_PIN)) {
+    String jsonString;
+    serializeJson(doc, jsonString);
+    i2CSendData = jsonString;
+    dataState = STATE_READY_TO_SEND;
+  } else if(cmdType == CMD_GET_PALETTE) {
+    Serial.println("CMD_GET_PALETTE");
+    i2CSendData="";
+    for( int i = 0 ; i < vcolor_palette[paletteIdx].size() ; i++ ) {
+      char c[16] = {0};
+      sprintf(c, "%06x,", vcolor_palette[paletteIdx][i]);
+      i2CSendData += c;
+    }
+    dataState = STATE_READY_TO_SEND;
+  } else if (cmdType == CMD_SHOT) {
     keyOnTime = millis();  // 最後にkey操作した時間
-    LED[0] = CRGB::Orange;
-    FastLED.setBrightness(20);
-    FastLED.show();
-
-    CameraGet();  // 撮影
-
+    Serial.println("CMD_SHOT");
     SD.end();  // 念のため一旦END
     delay(100);
-    SD.begin(15, SPI, 10000000);
-
+    while (false == SD.begin(SD.begin(CS_PIN, SPI, 1000000UL))) {
+      Serial.println("SD Wait...");
+      delay(500);
+    }
+    CameraGet();  // 撮影
     saveToSD_OriginalBMP();  // 変換前の画像保存
+    
+    std::vector<uint8_t> v = originalToPalette();
+    Serial.print("len: ");
+    Serial.println(v.size());
 
-    if (dither == 0) {
-      saveGraylevel_fromFb();  // 輝度情報の保存
-    } else {
-      canvas0.pushImage(0, 0, 240, 176, (uint16_t*)fb->buf);  // (x, y, w, h, *data)
-      applyColorBayerDither4x4(canvas0, canvas0, levels);
-      saveGraylevel_fromCanvas(canvas0);
-    }
+    char c[32];
+    memset(c, 0, 32);
+    sprintf(c, "%d", v.size());
+    i2CSendData = c;
+    dataState = STATE_READY_TO_SEND;
 
-    for (int i = 0; i < maxPalettelndex; i++) {
-      currentPalettelndex = i;
-      FastLED.setBrightness(i * 20 + 40);  // 処理が進むごとに明るくする
-      FastLED.show();
-      saveToSD_ConvertBMP();  // 変換後の画像保存
+    Serial.println("Length send wait");
+    while(dataState == STATE_READY_TO_SEND) {
+      delay(10);
     }
+    Serial.println("Length sent");
+    
+    sendImage(v);
+    saveToSD_ConvertBMP(v);
 
     CameraFree();   // フレームバッファを解放
-    filecounter++;  // 連番を更新
+    filecounter++;
     SD.end();
+  } else if (cmdType == CMD_GET_ICON) {
+    Serial.println("CMD_ICON");
+    SD.end();  // 念のため一旦END
+    delay(100);
+    while (false == SD.begin(SD.begin(CS_PIN, SPI, 1000000UL))) {
+      Serial.println("SD Wait...");
+      delay(500);
+    }
+    
+    std::vector<uint8_t> v = IconToPalette();
+    Serial.print("len: ");
+    Serial.println(v.size());
 
-    LED[0] = CRGB::LimeGreen;
-    FastLED.setBrightness(200);
-    FastLED.show();
-  }
+    char c[32];
+    memset(c, 0, 32);
+    sprintf(c, "%d", v.size());
+    i2CSendData = c;
+    dataState = STATE_READY_TO_SEND;
 
-  //一定時間操作していないとLEDをOFF 平均消費電流が45mAを下回るとTailBATが40秒後に自動OFFする
-  if ((millis() - keyOnTime >= LED_ON_DURATION)) {
-    LED[0] = CRGB::Black;
-    FastLED.show();
+    Serial.println("Length send wait");
+    while(dataState == STATE_READY_TO_SEND) {
+      delay(10);
+    }
+    Serial.println("Length sent");
+    
+    sendImage(v);
+    SD.end();
+  } else {
+    //Serial.println("CMD_UNKNOWN");
+    //CMD_GET_PHOTO,
+    //CMD_GET_PHOTO_LIST,
   }
+  delay(100);
 }
