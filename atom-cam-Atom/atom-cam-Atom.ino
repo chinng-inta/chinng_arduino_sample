@@ -247,7 +247,8 @@ std::vector<uint8_t> originalToPalette() {
     {  7, -1,  5, -3 }
   };
   // 元画像はRGB565 (1ピクセル2バイト)
-  uint16_t *src_pixels = (uint16_t*)fb->buf;
+  //uint16_t *src_pixels = (uint16_t*)fb->buf;
+  uint8_t *src_pixels = (uint8_t*)fb->buf;
 
   int src_width = fb->width;
   int src_height = fb->height;
@@ -258,15 +259,15 @@ std::vector<uint8_t> originalToPalette() {
   int crop_start_y = (src_height - crop_height) / 2;
 
   memset(crop_data, 0, sizeof(uint8_t) * 128 * 128);
-  canvas0.pushImage(0, 0, src_width, src_height, (uint16_t*)src_pixels);
   for (int y = 0; y < crop_height; y++) {
-    for (int x = 0; x < crop_width; x++) {
+    //for (int x = 0; x < crop_width; x++) {
+      for (int x = 0; x < crop_width * 2; x +=2 ) {
       // 元画像から対応するピクセル座標を計算
       int src_x = crop_start_x + x;
       int src_y = crop_start_y + y;
       
       // 元画像のピクセル色(RGB565)を取得
-      uint16_t src_color_565 = src_pixels[src_y * src_width + src_x];
+      uint16_t src_color_565 = (src_pixels[src_y * src_width * 2 + src_x] << 8) | src_pixels[src_y * src_width * 2 + src_x+1];
       
       // RGB888に変換して、パレットの最も近い色を探す
       // uint32_t src_color_888 = rgb565_to_rgb888(src_color_565);
@@ -283,16 +284,18 @@ std::vector<uint8_t> originalToPalette() {
       uint32_t dst_color_888 = (r << 16) | (g << 8) | b;
 
       std::pair<uint32_t, uint8_t> pair = findClosestColor(dst_color_888);
-      crop_data[y][x] = pair.second;
+      
+      crop_data[y][x/2] = pair.second;
+
     }
   }
-  canvas0.clearDisplay(BLACK);
   // カメラUSBポート下側の画像が撮れるので、90度回転させる
   for (int y = 0; y < crop_height; y++) {
     for (int x = 0; x < crop_width; x++) {
       v.push_back(crop_data[x][crop_height -1 -y]);
     }
   }
+
   return v;
 }
 
@@ -301,7 +304,8 @@ std::vector<uint8_t> IconToPalette() {
   char png_path[64];
   memset(png_path, 0, 64);
   sprintf(png_path, "/ICON/%d.png", iconIdx);
-#if 1
+
+  // canvas1.drawBmpFile(SD, png_path, 0, 0); // はヘッダ回りでコンパイルエラーになったので、地道に算出
   File pngFile = SD.open(png_path, "r"); // まずファイルを開く
   if (!pngFile) {
     Serial.printf("Error: Failed to open %s for reading.\n", png_path);
@@ -320,47 +324,28 @@ std::vector<uint8_t> IconToPalette() {
   pngFile.read(png_data_buffer, png_data_size);
   pngFile.close(); // ファイルはすぐに閉じる
 
-  uint16_t* pixel_buffer = nullptr;
-  pixel_buffer = (uint16_t*)heap_caps_malloc(icon_width * icon_height * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-  if (!pixel_buffer) {
-    Serial.println("Failed to allocate pixel buffer");
-    heap_caps_free(png_data_buffer);
-    pngFile.close();
-    return v;
-  }
-
   canvas1.createSprite(icon_width, icon_height); // png読み込み用スプライト
   canvas1.drawPng(png_data_buffer, png_data_size, 0, 0);
   heap_caps_free(png_data_buffer);
-#else
-  uint16_t* pixel_buffer = nullptr;
-  pixel_buffer = (uint16_t*)heap_caps_malloc(icon_width * icon_height * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-  if (!pixel_buffer) {
-    Serial.println("Failed to allocate pixel buffer");
-    return v;
-  }
-
-  canvas1.createSprite(icon_width, icon_height); // png読み込み用スプライト
-  canvas1.drawBmpFile(SD, png_path, 0, 0);
-#endif
-  canvas1.readRect(0, 0, icon_width, icon_height, pixel_buffer); // ピクセルデータに変換
 
   for (int y = 0; y < icon_height; y++) {
     for (int x = 0; x < icon_width; x++) {
       // 元画像から対応するピクセル座標を計算
       // 元画像のピクセル色(RGB565)を取得
-      uint16_t src_color_565 = pixel_buffer[y * icon_width + x];
+      //uint16_t src_color_565 = pixel_buffer[y * icon_width + x];
       
       // RGB888に変換して、パレットの最も近い色を探す
       //uint32_t src_color_888 = rgb565_to_rgb888(src_color_565);
-      uint32_t src_color_888 = canvas1.color16to24(src_color_565);
+      //uint32_t src_color_888 = canvas1.color16to24(src_color_565);
+      RGBColor src_rgb = canvas1.readPixelRGB(x,y);
+      uint32_t src_color_888 = src_rgb.RGB888();
 
       std::pair<uint32_t, uint8_t> pair = findClosestColor(src_color_888);
       v.push_back(pair.second);
     }
   }
   canvas1.deleteSprite();  // png読み込み用スプライト解放
-  heap_caps_free(pixel_buffer);
+
   return v;
 }
 
@@ -407,6 +392,57 @@ bool CameraBegin() {
                          // s->set_colorbar(s, 1); //カラーバー 0無効 1有効
                          // s->set_brightness(s, 1);  // up the brightness just a bit
                          // s->set_saturation(s, 0);  // lower the saturation
+  
+#if 0
+  s->set_brightness(s, 0); // -2 から 2
+  // ホワイトバランス
+  s->set_whitebal(s, 1);
+  s->set_awb_gain(s, 0);
+  s->set_wb_mode(s, 0);
+
+  // 露出
+  s->set_ae_level(s, 1);
+  s->set_aec_value(s, 0);
+  s->set_aec2(s, 1);
+
+  // ゲイン
+  s->set_gain_ctrl(s, 1);
+  s->set_agc_gain(s, 0);
+  
+  s->set_raw_gma(s, 1);
+  
+  s = esp_camera_sensor_get();
+  camera_status_t *status = &s->status;
+  Serial.printf("framesize: %d\n",status->framesize);
+  Serial.printf("scale: %d\n",status->scale);
+  Serial.printf("binning: %d\n",status->binning);
+  Serial.printf("quality: %d\n",status->quality);
+  Serial.printf("brightness: %d\n",status->brightness);
+  Serial.printf("contrast: %d\n",status->contrast);
+  Serial.printf("saturation: %d\n",status->saturation);
+  Serial.printf("sharpness: %d\n",status->sharpness);
+  Serial.printf("sharpness: %d\n",status->sharpness);
+  Serial.printf("denoise: %d\n",status->denoise);
+  Serial.printf("special_effect: %d\n",status->special_effect);
+  Serial.printf("wb_mode: %d\n",status->wb_mode);
+  Serial.printf("awb: %d\n",status->awb);
+  Serial.printf("awb_gain: %d\n",status->awb_gain);
+  Serial.printf("aec: %d\n",status->aec);
+  Serial.printf("aec2: %d\n",status->aec2);
+  Serial.printf("ae_level: %d\n",status->ae_level);
+  Serial.printf("aec_value: %d\n",status->aec_value);
+  Serial.printf("agc: %d\n",status->agc);
+  Serial.printf("agc_gain: %d\n",status->agc_gain);
+  Serial.printf("gainceiling: %d\n",status->gainceiling);
+  Serial.printf("bpc: %d\n",status->bpc);
+  Serial.printf("wpc: %d\n",status->wpc);
+  Serial.printf("raw_gma: %d\n",status->raw_gma);
+  Serial.printf("lenc: %d\n",status->lenc);
+  Serial.printf("hmirror: %d\n",status->hmirror);
+  Serial.printf("vflip: %d\n",status->vflip);
+  Serial.printf("dcw: %d\n",status->dcw);
+  Serial.printf("colorbar: %d\n",status->colorbar);
+#endif
   return true;
 }
 
@@ -506,9 +542,9 @@ void saveToSD_ConvertBMP(std::vector<uint8_t> v) {
 }
 
 // ファイルとディレクトリを一覧表示する関数
-int listFiles(fs::FS &fs, const char * dirname, int levels) {
+int listFiles(fs::FS &fs, const char * dirname, int levels, bool bDisp = false) {
   int fileCnt = 0;
-  Serial.printf("Listing directory: %s\n", dirname);
+  if(bDisp) Serial.printf("Listing directory: %s\n", dirname);
 
   File root = fs.open(dirname);
   if (!root) {
@@ -522,19 +558,25 @@ int listFiles(fs::FS &fs, const char * dirname, int levels) {
 
   File file = root.openNextFile();
   while (file) {
-    for (int i = 0; i < levels; i++) {
-      Serial.print("  "); // インデント
+    if(bDisp) {
+      for (int i = 0; i < levels; i++) {
+        Serial.print("  "); // インデント
+      }
     }
     if (file.isDirectory()) {
-      Serial.print("DIR : ");
-      Serial.println(file.name());
+      if(bDisp) {
+        Serial.print("DIR : ");
+        Serial.println(file.name());
+      }
       // 再帰的にサブディレクトリも表示
-      fileCnt += listFiles(fs, file.path(), levels + 1);
+      fileCnt += listFiles(fs, file.path(), levels + 1, bDisp);
     } else {
-      Serial.print("FILE: ");
-      Serial.print(file.name());
-      Serial.print("\tSIZE: ");
-      Serial.println(file.size());
+      if(bDisp) {
+        Serial.print("FILE: ");
+        Serial.print(file.name());
+        Serial.print("\tSIZE: ");
+        Serial.println(file.size());
+      }
       fileCnt++;
     }
     file = root.openNextFile();
@@ -574,8 +616,8 @@ void jsonLoad() {
     Serial.printf("SD Card Size: %lluMB\n", cardSize);
 
     Serial.println("file check");
-    filecounter = listFiles(SD, "/Palette", 0);
-    iconCnt = listFiles(SD, "/ICON", 0);
+    filecounter = listFiles(SD, "/Palette", 0, false);
+    iconCnt = listFiles(SD, "/ICON", 0, false);
     iMenuIconCnt = iconCnt;
     // ファイルが存在するか確認
     if (!SD.exists(filename)) {
@@ -764,7 +806,9 @@ void loop() {
     CameraGet();  // 撮影
     saveToSD_OriginalBMP();  // 変換前の画像保存
     
+    //saveGraylevel_fromFb();
     std::vector<uint8_t> v = originalToPalette();
+    
     Serial.print("len: ");
     Serial.println(v.size());
 

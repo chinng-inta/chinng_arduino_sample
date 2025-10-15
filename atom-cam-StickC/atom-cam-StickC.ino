@@ -432,6 +432,18 @@ void ColorMenu() {
   }
 }
 
+void getIcon() {
+  if( ATOMINFO.menuCnt > 0 ) {
+    vMenuColor.clear();
+    for(int i = 0 ; i < ATOMINFO.menuCnt ; i++) {
+      String sendData = "GetIcon"+String(i);
+      std::vector<uint8_t> v = getImage(sendData,false);
+      vMenuColor.push_back(v);
+    }
+    drawImage(vMenuColor[g_iMenuIdx], false);
+  }
+}
+
 void setup() {
   // put your setup code here, to run once:
   vColorIdx.clear();
@@ -481,14 +493,7 @@ void setup() {
   if(getPallete(g_palletIdx) < 16){
     getPallete(g_palletIdx);
   }
-  if( ATOMINFO.menuCnt > 0 ) {
-    for(int i = 0 ; i < ATOMINFO.menuCnt ; i++) {
-      String sendData = "GetIcon"+String(i);
-      std::vector<uint8_t> v = getImage(sendData,false);
-      vMenuColor.push_back(v);
-    }
-    drawImage(vMenuColor[g_iMenuIdx], false);
-    }
+  getIcon();
 }
 
 
@@ -529,7 +534,7 @@ void loop() {
     if( btnA_cur_value != btnA_last_value && btnA_cur_value == 0) {
       if(g_iMenuIdx == e_Color) {
         ColorMenu();
-        drawImage(vMenuColor[g_iMenuIdx], false);
+        getIcon();
       } else if(g_iMenuIdx == e_Camera) {
       vColorIdx = getImage("doShot",true);
         canvas.fillSprite(BLACK);
