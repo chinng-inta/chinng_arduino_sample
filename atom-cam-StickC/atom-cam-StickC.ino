@@ -116,6 +116,7 @@ void JoyCTask(void* arg ) {
 
 String recieveI2C(String sendData, int len) {
   String receivedData = "";
+  bool bExt = false;
   do {
     bool inPacket = false;
     Wire.requestFrom( ATOM_ADDR, len );
@@ -125,6 +126,7 @@ String recieveI2C(String sendData, int len) {
         if (c == ETX) {
           // 受信完了
           inPacket = false;
+          bExt = true;
           break;
         } else {
           receivedData += c;
@@ -136,7 +138,7 @@ String recieveI2C(String sendData, int len) {
     }
     if( receivedData == "busy" ) {
       receivedData = "";
-      delay(10);
+      delay(200);
     }
     if( receivedData == "NoCommand" ) {
       Wire.beginTransmission(ATOM_ADDR);
@@ -147,7 +149,10 @@ String recieveI2C(String sendData, int len) {
       receivedData = "";
       delay(10);
     }
-  } while(receivedData == "" );
+    if(receivedData.length() == 0) {
+      bExt = false;
+    }
+  } while(!bExt);
 
   return receivedData;
 }
@@ -162,14 +167,17 @@ int getAtomInfo() {
   Wire.write(ETX);
   Wire.endTransmission();
 
+  delay(200);
   Serial.println("Start recieve getAtomInfo");
   String receivedJson = recieveI2C(sendData, 256);
   Serial.println("End recieve getAtomInfo");
 
+  Serial.println(receivedJson);
   int len = receivedJson.length();
+  Serial.println(len);
   if(len > 0) {
     //StaticJsonDocument<256> doc;
-    DynamicJsonDocument doc(len + 100);
+    DynamicJsonDocument doc(len*2);
     DeserializationError error = deserializeJson(doc, receivedJson);
 
     if( error ) {
@@ -202,6 +210,7 @@ bool getPallete(int palletIdx = 0) {
     StickCP2.Display.print(sendData);
     StickCP2.Display.println("");
 
+    Wire.flush();
     Wire.beginTransmission(ATOM_ADDR);
     Wire.write(STX);
     Wire.print(sendData);
@@ -312,6 +321,7 @@ std::vector<uint8_t> getImage(String sendData, bool bShot) {
   Wire.write(ETX);
   Wire.endTransmission();
 
+  delay(500);
   Serial.println("Start recieve jsonLength");
   int jsonLen = 0;
   do {
@@ -342,6 +352,7 @@ std::vector<uint8_t> getImage(String sendData, bool bShot) {
   client.stop();
 
   Serial.printf("Image Recieved %d\n", json_data.length());
+  StickCP2.Display.println("");
   DynamicJsonDocument docImage(json_data.length() *2); // 念のため少し余裕を持たせる
   DeserializationError error = deserializeJson(docImage, json_data);
   
@@ -408,9 +419,7 @@ void ColorMenu() {
     btnA_cur = StickCP2.BtnA.isPressed();
     btnB_cur = StickCP2.BtnB.isPressed();
     if( btnA_cur != btnA_last && btnA_cur == 0) {
-      if(getPallete(g_palletIdx) < 16){
-        getPallete(g_palletIdx);
-      }
+      getPallete(g_palletIdx);
     }
 
     if( btnB_cur != btnB_last && btnB_cur == 0) {
@@ -463,15 +472,17 @@ void setup() {
   canvas.createSprite(M5.Lcd.width(), M5.Lcd.height());
 
   Wire.begin();
+  Wire.flush();
   getAtomInfo();
 
   Wire1.end();
   delay(100);
   StickCP2.Display.println("wait joyc");
   while (!(sensor.begin(&Wire1, JoyC_ADDR, 0, 26, 100000UL))) {
-      delay(100);
       StickCP2.Display.setCursor(0, 15, 1);
       StickCP2.Display.println("I2C Error!");
+      Serial.println("I2C Error!");
+      delay(100);
   }
   StickCP2.Display.println("connect joyc");
   xTaskCreatePinnedToCore(JoyCTask, "", 8192, NULL, 1, NULL, 1);
@@ -480,7 +491,7 @@ void setup() {
   StickCP2.Display.println("Attempting to connect to SSID:");
   StickCP2.Display.print(ATOMINFO.ssid);
   status = WiFi.begin(ssid, pass);
-    while (WiFi.status() != WL_CONNECTED) {
+  while (WiFi.status() != WL_CONNECTED) {
       delay(1000);
       StickCP2.Display.print(".");
   }
@@ -490,7 +501,7 @@ void setup() {
   String sIP = "My IP Address: " + ip.toString();
   StickCP2.Display.println(sIP);
 
-  if(getPallete(g_palletIdx) < 16){
+  if(getPallete(g_palletIdx) == false){
     getPallete(g_palletIdx);
   }
   getIcon();
@@ -516,7 +527,9 @@ void loop() {
       if( g_palletIdx >= ATOMINFO.paletteCnt) {
         g_palletIdx = 0;
       }
-      getPallete(g_palletIdx);
+      if(getPallete(g_palletIdx) == false){
+        getPallete(g_palletIdx);
+      }
     }
   } else {
     canvas.fillSprite(BLACK);
@@ -536,7 +549,7 @@ void loop() {
         ColorMenu();
         getIcon();
       } else if(g_iMenuIdx == e_Camera) {
-      vColorIdx = getImage("doShot",true);
+        vColorIdx = getImage("doShot",true);
         canvas.fillSprite(BLACK);
         if( vColorIdx.size() > 0 ) {
             drawImage(vColorIdx, true);
@@ -550,4 +563,5 @@ void loop() {
   btnA_last_value = btnA_cur_value;
   btnB_last_value = btnB_cur_value;
   prevDirection = currentDirection;
+  delay(10);
 }

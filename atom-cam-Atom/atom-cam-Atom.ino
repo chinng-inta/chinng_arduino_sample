@@ -12,7 +12,7 @@
 #include "WiFi.h"
 #include "..\wifi_setting\M5_wifi.h"
 
-//#define LED_PIN 2
+#define LEDIR_PIN 47
 #define POWER_GPIO_NUM 18
 
 // 切り出す画像のサイズ
@@ -107,7 +107,7 @@ camera_config_t camera_config = {
   .ledc_channel = LEDC_CHANNEL_0,
 
   .pixel_format = PIXFORMAT_RGB565,
-  .frame_size = FRAMESIZE_QCIF,
+  .frame_size = FRAMESIZE_128X128,
   // FRAMESIZE_96X96,    // 96x96
   // FRAMESIZE_QQVGA,    // 160x120
   // FRAMESIZE_128X128,  // 128x128
@@ -681,29 +681,18 @@ void jsonLoad() {
 
 GETSETTING_FAIL:
   if(!bRead) {
-    uint32_t default_colors[2][16] = {
-      {
+    uint32_t default_colors[16] = {
         0x000000, 0x808080, 0xc0c0c0, 0xffffff,
         0xff0000, 0xffff00, 0x00ff00, 0x00ffff,
         0x0000ff, 0xff00ff, 0x800000, 0x808000,
         0x008000, 0x008080, 0x000080, 0x800080
-      },
-      {
-        0xFADBC0,0xF8CFAF,0xE6B093,0xD38A6B,
-        0x2C3E50,0x3E566B,0x4A6C88,0x7395AE,
-        0xE74C3C,0xD94436,0xC0392B,0xA32E22,
-        0xF1C40F,0xF39C12,0xE67E22,0xFFFFFF
-      },
     };
     
-    for(int i = 0 ; i < 2 ; i++) {
-      std::vector<uint32_t> v;
-      for(int j = 0 ; j < 16 ; j++ ) {
-        v.push_back(default_colors[i][j]);
-
-      }
-      vcolor_palette.push_back(v);
+    std::vector<uint32_t> v;
+    for(int i = 0 ; i < 16 ; i++ ) {
+      v.push_back(default_colors[i]);
     }
+    vcolor_palette.push_back(v);
   }
 
   iPaletteCnt = vcolor_palette.size();
@@ -771,10 +760,14 @@ void setup() {
 }
 
 void loop() {
+  if( dataState == STATE_READY_TO_SEND) {
+    delay(100);
+    return;
+  }
   // put your main code here, to run repeatedly:
   if(cmdType == CMD_GET_ATOMINFO) {
     Serial.println("CMD_GET_ATOMINFO");
-    StaticJsonDocument<200> doc;
+    StaticJsonDocument<512> doc;
     IPAddress myIP = WiFi.softAPIP();
     doc["ssid"] = myIP;
     doc["port"] = USEPORT;
