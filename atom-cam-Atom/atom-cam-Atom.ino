@@ -36,14 +36,10 @@ WiFiServer server(USEPORT); // 80番ポート(http)
 WiFiClient client;
 
 // Atomic TFCard Base のピン配置に合わせて定義
-//#define SCK_PIN   5
-//#define MISO_PIN  7
-//#define MOSI_PIN  6
-//#define CS_PIN    8
 #define SCK_PIN   7
 #define MISO_PIN  8
 #define MOSI_PIN  6
-#define CS_PIN    39
+#define CS_PIN    5
 
 std::vector<std::vector<uint32_t>> vcolor_palette;
 
@@ -55,6 +51,7 @@ int iPaletteCnt = 0;
 
 uint32_t keyOnTime = 0;             // キースイッチを操作した時間
 int filecounter = 1;
+std::vector<String> paletteFile;
 
 #define ATOM_ADDR 0x4B
 #define STX 0x02
@@ -69,7 +66,9 @@ enum CommandType {
   CMD_SHOT,
   CMD_GET_PHOTO,
   CMD_GET_PHOTO_LIST,
+  CMD_GET_HEARTBEAT,
 };
+
 volatile uint8_t cmdType = CMD_NONE;
 volatile uint8_t paletteIdx = 0;
 volatile uint8_t iconIdx = 0;
@@ -150,7 +149,14 @@ void onReceived( int len ) {
   if(i2cRecieve.compareTo("doShot") == 0 ){
     cmdType = CMD_SHOT;
     dataState = STATE_PROCESSING;
-  
+  } else if(i2cRecieve.indexOf("GetPhoto") != -1 && i2cRecieve.compareTo("GetPhotoList") != 0 ) {
+    // カラーパレット取得
+    String strFileName = i2cRecieve;
+    strFileName.replace("GetPhoto", "");
+    strFileName.trim();
+    photoName = strFileName;
+    cmdType = CMD_GET_PHOTO;
+    dataState = STATE_PROCESSING;
   } else if(i2cRecieve.indexOf("GetPalette") != -1) {
     // カラーパレット取得
     String strIdx = i2cRecieve;
@@ -174,6 +180,14 @@ void onReceived( int len ) {
   } else if(i2cRecieve.compareTo("GetAtomInfo") == 0) {
     // AtomS3Rの情報取得
     cmdType = CMD_GET_ATOMINFO;
+    dataState = STATE_PROCESSING;
+  } else if(i2cRecieve.indexOf("HeartBeat") != -1) {
+    // AtomS3Rの情報取得
+    cmdType = CMD_GET_HEARTBEAT;
+    dataState = STATE_PROCESSING;
+  } else if(i2cRecieve.compareTo("GetPhotoList") == 0) {
+    // 画像一覧取得
+    cmdType = CMD_GET_PHOTO_LIST;
     dataState = STATE_PROCESSING;
   } else {
     cmdType = CMD_NONE;
@@ -258,7 +272,8 @@ std::vector<uint8_t> originalToPalette() {
   int crop_start_x = (src_width - crop_width) / 2;
   int crop_start_y = (src_height - crop_height) / 2;
 
-  memset(crop_data, 0, sizeof(uint8_t) * 128 * 128);
+
+  memset(crop_data, 0, sizeof(uint8_t) * crop_width * crop_height);
   for (int y = 0; y < crop_height; y++) {
     //for (int x = 0; x < crop_width; x++) {
       for (int x = 0; x < crop_width * 2; x +=2 ) {
@@ -270,8 +285,8 @@ std::vector<uint8_t> originalToPalette() {
       uint16_t src_color_565 = (src_pixels[src_y * src_width * 2 + src_x] << 8) | src_pixels[src_y * src_width * 2 + src_x+1];
       
       // RGB888に変換して、パレットの最も近い色を探す
-      // uint32_t src_color_888 = rgb565_to_rgb888(src_color_565);
-      uint32_t src_color_888 = canvas0.color16to24(src_color_565);
+      uint32_t src_color_888 = rgb565_to_rgb888(src_color_565);
+      //uint32_t src_color_888 = canvas0.color16to24(src_color_565);
       int r,g,b;
       r = (src_color_888 >> 16) & 0xff;
       g = (src_color_888 >> 8) & 0xff;
@@ -336,7 +351,6 @@ std::vector<uint8_t> IconToPalette() {
       
       // RGB888に変換して、パレットの最も近い色を探す
       //uint32_t src_color_888 = rgb565_to_rgb888(src_color_565);
-      //uint32_t src_color_888 = canvas1.color16to24(src_color_565);
       RGBColor src_rgb = canvas1.readPixelRGB(x,y);
       uint32_t src_color_888 = src_rgb.RGB888();
 
@@ -345,6 +359,81 @@ std::vector<uint8_t> IconToPalette() {
     }
   }
   canvas1.deleteSprite();  // png読み込み用スプライト解放
+
+  return v;
+}
+
+std::vector<uint8_t> SelPhotoToPalette( String fileName ) {
+  std::vector<uint8_t> v;
+  char bmp_path[128];
+  memset(bmp_path, 0, 128);
+  sprintf(bmp_path, "/Original/%s", fileName.c_str());
+  Serial.printf("%s\n", bmp_path);
+
+  // canvas1.drawBmpFile(SD, bmp_path, 0, 0); // はヘッダ回りでコンパイルエラーになったので、地道に算出
+  File bmpFile = SD.open(bmp_path, "r"); // まずファイルを開く
+  if (!bmpFile) {
+    Serial.printf("Error: Failed to open %s for reading.\n", bmp_path);
+    return v;
+  }
+  Serial.println("File Opened");
+
+  Serial.println("Alloc Buffer");
+  size_t bmp_data_size = bmpFile.size();
+  uint8_t* bmp_data_buffer = (uint8_t*)heap_caps_malloc(bmp_data_size, MALLOC_CAP_SPIRAM);
+  Serial.println("Alloc Buffer End");
+
+  if (!bmp_data_buffer) {
+    Serial.println("Failed to allocate buffer for PNG data");
+    bmpFile.close();
+    return v;
+  }
+  Serial.printf("Read %s\n", bmp_path);
+  // 3. ファイルの内容を全てバッファに読み込む
+  bmpFile.read(bmp_data_buffer, bmp_data_size);
+  bmpFile.close(); // ファイルはすぐに閉じる
+  Serial.printf("Read Complete %s\n", bmp_path);
+
+  int src_width, src_height;
+  lgfx::bitmap_header_t bmpheader;
+  memcpy(&bmpheader, bmp_data_buffer, sizeof(lgfx::bitmap_header_t));
+  src_width = bmpheader.biWidth;
+  src_height = abs(bmpheader.biHeight);
+
+  int crop_start_x = (src_width - crop_width) / 2;
+  int crop_start_y = (src_height - crop_height) / 2;
+  Serial.printf("src_width: %d, src_height: %d\n", src_width, src_height);
+  Serial.printf("crop_start_x: %d, crop_start_y: %d\n", crop_start_x, crop_start_y);
+
+  canvas1.createSprite(crop_width, crop_height); // bmp読み込み用スプライト
+  canvas1.drawBmp(bmp_data_buffer, bmp_data_size, 0, 0, crop_width, crop_height, crop_start_x, crop_start_y, 1.0, 1.0, top_left);
+  heap_caps_free(bmp_data_buffer);
+
+  memset(crop_data, 0, sizeof(uint8_t) * crop_width * crop_height);
+  for (int y = 0; y < crop_height; y++) {
+    for (int x = 0; x < crop_width; x++) {
+      // 元画像から対応するピクセル座標を計算
+      // 元画像のピクセル色(RGB565)を取得
+      //uint16_t src_color_565 = pixel_buffer[y * icon_width + x];
+      
+      // RGB888に変換して、パレットの最も近い色を探す
+      //uint32_t src_color_888 = rgb565_to_rgb888(src_color_565);
+      RGBColor src_rgb = canvas1.readPixelRGB(x,y);
+      uint32_t src_color_888 = src_rgb.RGB888();
+
+      std::pair<uint32_t, uint8_t> pair = findClosestColor(src_color_888);
+      crop_data[y][x] = pair.second;
+    }
+  }
+  canvas1.deleteSprite();  // png読み込み用スプライト解放
+  
+  // カメラUSBポート下側の画像が撮れるので、90度回転させる
+  for (int y = 0; y < crop_height; y++) {
+    for (int x = 0; x < crop_width; x++) {
+      v.push_back(crop_data[x][crop_height -1 -y]);
+    }
+  }
+
 
   return v;
 }
@@ -375,8 +464,29 @@ void sendImage(std::vector<uint8_t> v) {
   Serial.printf("Sending JSON (%dbytes)...\n", jsonLen);
   client.println(jsonString);
 
-//  client.stop();
-//  Serial.println("Client disconnected");
+}
+
+void SendFileList() {
+  client = server.available();
+  if (!client) {
+    Serial.println("client not found");
+    return;
+  }
+
+  DynamicJsonDocument doc(paletteFile.size()); // 念のため少し余裕を持たせる
+  doc["Type"] = "FILELIST";
+  JsonArray dataArray = doc.createNestedArray("files");
+  for(int i = 0 ; i < paletteFile.size() ; i++) {
+    String fileName = paletteFile[i];
+    fileName.replace("/Original/", "");
+    dataArray.add(fileName);
+  }
+
+  String jsonString;
+  jsonString.reserve(paletteFile.size()); 
+  int jsonLen = serializeJson(doc, jsonString);
+  Serial.printf("Sending JSON (%dbytes)...\n", jsonLen);
+  client.println(jsonString);
 }
 
 bool CameraBegin() {
@@ -477,6 +587,10 @@ void saveToSD_OriginalBMP() {
     file.write(out_bmp, out_bmp_len);
     file.close();
     free(out_bmp);
+
+    String strFileName = filename;
+    strFileName.replace("/Original/", "");
+    paletteFile.push_back(strFileName);
   } else {
     Serial.printf("Failed to save %s\n", filename);
   }
@@ -542,46 +656,50 @@ void saveToSD_ConvertBMP(std::vector<uint8_t> v) {
 }
 
 // ファイルとディレクトリを一覧表示する関数
-int listFiles(fs::FS &fs, const char * dirname, int levels, bool bDisp = false) {
-  int fileCnt = 0;
+std::vector<String> listFiles(fs::FS &fs, const char * dirname, int levels, bool bDisp = false) {
+  std::vector<String> vFile;
   if(bDisp) Serial.printf("Listing directory: %s\n", dirname);
 
   File root = fs.open(dirname);
   if (!root) {
     Serial.println("Failed to open directory");
-    return fileCnt;
+    return vFile;
   }
   if (!root.isDirectory()) {
     Serial.println("Not a directory");
-    return fileCnt;
+    return vFile;
   }
 
-  File file = root.openNextFile();
-  while (file) {
+  bool isDir;
+  String fileName = root.getNextFileName(&isDir);
+
+  while (fileName.length() > 0) {
     if(bDisp) {
       for (int i = 0; i < levels; i++) {
         Serial.print("  "); // インデント
       }
     }
-    if (file.isDirectory()) {
+    if (isDir) {
+      String subDir = fileName;
+//      subDir += "/";
+//      subDir += fileName;
       if(bDisp) {
         Serial.print("DIR : ");
-        Serial.println(file.name());
+        Serial.println(subDir);
       }
       // 再帰的にサブディレクトリも表示
-      fileCnt += listFiles(fs, file.path(), levels + 1, bDisp);
+      std::vector<String> vFile2 = listFiles(fs, subDir.c_str(), levels + 1, bDisp);
+      vFile.insert(vFile.end(), vFile2.begin(), vFile2.end());
     } else {
       if(bDisp) {
         Serial.print("FILE: ");
-        Serial.print(file.name());
-        Serial.print("\tSIZE: ");
-        Serial.println(file.size());
+        Serial.println(fileName);
       }
-      fileCnt++;
+      vFile.push_back(fileName);
     }
-    file = root.openNextFile();
+    fileName = root.getNextFileName(&isDir);
   }
-  return fileCnt;
+  return vFile;
 }
 
 void jsonLoad() {
@@ -591,14 +709,9 @@ void jsonLoad() {
   bool bSDbegin = false;
   uint8_t* readBuf = NULL;
 
-#if 1
   Serial.println("SD.begin");
-//  if (!SD.begin(CS_PIN, SPI, 1000000UL)) {
-  if(1){
-    bSDbegin = true;
-    delay(10);
-    uint8_t cardType = SD.cardType();
-
+  uint8_t cardType = SD.cardType();
+  if(cardType != CARD_NONE){
     Serial.print("SD Card Type: ");
     if(cardType == CARD_MMC){
         Serial.println("MMC");
@@ -606,8 +719,6 @@ void jsonLoad() {
         Serial.println("SDSC");
     } else if(cardType == CARD_SDHC){
         Serial.println("SDHC");
-    } else if(cardType == CARD_NONE){
-        Serial.println("No SD card attached");
     } else {
         Serial.println("UNKNOWN");
     }
@@ -616,9 +727,12 @@ void jsonLoad() {
     Serial.printf("SD Card Size: %lluMB\n", cardSize);
 
     Serial.println("file check");
-    filecounter = listFiles(SD, "/Palette", 0, false);
-    iconCnt = listFiles(SD, "/ICON", 0, false);
-    iMenuIconCnt = iconCnt;
+//    listFiles(SD, "/", 0, true);
+    paletteFile = listFiles(SD, "/Original/", 0, false);
+    filecounter = paletteFile.size();
+    std::vector<String> vIcon = listFiles(SD, "/ICON/", 0);
+    iMenuIconCnt = vIcon.size();
+
     // ファイルが存在するか確認
     if (!SD.exists(filename)) {
       Serial.println("File not Found");
@@ -672,13 +786,10 @@ void jsonLoad() {
         bRead = true;
       }
     }
-//    SD.end();
   } else {
-//    Serial.println("SD.begin fail");
+    Serial.println("No SD card attached");
   }
   
-#endif
-
 GETSETTING_FAIL:
   if(!bRead) {
     uint32_t default_colors[16] = {
@@ -715,16 +826,6 @@ void setup() {
   Wire1.end();
   delay(500);
 
-  Serial.println("SPI.begin");
-  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, -1);
-  while (false == SD.begin(SD.begin(CS_PIN, SPI, 1000000UL))) {
-    Serial.println("SD Wait...");
-    delay(500);
-  }
-
-  jsonLoad();
-  SD.end();
-
   Serial.println("PSRAM Check");
   if (psramFound()) {
     camera_config.pixel_format = PIXFORMAT_RGB565;
@@ -749,6 +850,17 @@ void setup() {
   IPAddress myIP = WiFi.softAPIP();
   Serial.println(myIP);
   server.begin();
+
+  Serial.println("SPI.begin");
+  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, -1);
+  while (false == SD.begin(CS_PIN, SPI, 1000000UL)) {
+    Serial.println("SD Wait...");
+    delay(500);
+  }
+
+  paletteFile.clear();
+  jsonLoad();
+  SD.end();
 
   Wire.begin(ATOM_ADDR);
   Wire.onReceive( onReceived );
@@ -792,7 +904,7 @@ void loop() {
     Serial.println("CMD_SHOT");
     SD.end();  // 念のため一旦END
     delay(100);
-    while (false == SD.begin(SD.begin(CS_PIN, SPI, 1000000UL))) {
+    while (false == SD.begin(CS_PIN, SPI, 1000000UL) ) {
       Serial.println("SD Wait...");
       delay(500);
     }
@@ -827,7 +939,8 @@ void loop() {
     Serial.println("CMD_ICON");
     SD.end();  // 念のため一旦END
     delay(100);
-    while (false == SD.begin(SD.begin(CS_PIN, SPI, 1000000UL))) {
+    //SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, -1);
+    while (false == SD.begin(CS_PIN, SPI, 1000000UL) ) {
       Serial.println("SD Wait...");
       delay(500);
     }
@@ -835,6 +948,56 @@ void loop() {
     std::vector<uint8_t> v = IconToPalette();
     Serial.print("len: ");
     Serial.println(v.size());
+
+    char c[32];
+    memset(c, 0, 32);
+    sprintf(c, "%d", v.size());
+    i2CSendData = c;
+    dataState = STATE_READY_TO_SEND;
+    SD.end();
+
+    Serial.println("Length send wait");
+    while(dataState == STATE_READY_TO_SEND) {
+      delay(10);
+    }
+    Serial.println("Length sent");
+    
+    sendImage(v);
+  } else if(cmdType == CMD_GET_HEARTBEAT) {
+    Serial.println("CMD_GET_HEARTBEAT");
+    i2CSendData="0";
+    dataState = STATE_READY_TO_SEND;
+  } else if(cmdType == CMD_GET_PHOTO_LIST) {
+    Serial.println("CMD_GET_PHOTO_LIST");
+
+    char c[32];
+    memset(c, 0, 32);
+    sprintf(c, "%d", paletteFile.size());
+    i2CSendData = c;
+    dataState = STATE_READY_TO_SEND;
+
+    Serial.println("Length send wait");
+    while(dataState == STATE_READY_TO_SEND) {
+      delay(10);
+    }
+    Serial.println("Length sent");
+    SendFileList();
+  } else if (cmdType == CMD_GET_PHOTO) {
+    Serial.println("CMD_GET_PHOTO");
+    SD.end();  // 念のため一旦END
+    delay(100);
+    //SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, -1);
+    while (false == SD.begin(CS_PIN, SPI, 1000000UL)) {
+      Serial.println("SD Wait...");
+      delay(500);
+    }
+    String fileName = photoName;
+    Serial.println(fileName);
+    std::vector<uint8_t> v = SelPhotoToPalette(fileName);
+    Serial.print("len: ");
+    Serial.println(v.size());
+    photoName = "";
+    SD.end();
 
     char c[32];
     memset(c, 0, 32);
@@ -849,11 +1012,8 @@ void loop() {
     Serial.println("Length sent");
     
     sendImage(v);
-    SD.end();
   } else {
     //Serial.println("CMD_UNKNOWN");
-    //CMD_GET_PHOTO,
-    //CMD_GET_PHOTO_LIST,
   }
-  delay(100);
+  delay(10);
 }
