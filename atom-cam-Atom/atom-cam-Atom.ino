@@ -376,23 +376,19 @@ std::vector<uint8_t> SelPhotoToPalette( String fileName ) {
     Serial.printf("Error: Failed to open %s for reading.\n", bmp_path);
     return v;
   }
-  Serial.println("File Opened");
 
-  Serial.println("Alloc Buffer");
   size_t bmp_data_size = bmpFile.size();
   uint8_t* bmp_data_buffer = (uint8_t*)heap_caps_malloc(bmp_data_size, MALLOC_CAP_SPIRAM);
-  Serial.println("Alloc Buffer End");
 
   if (!bmp_data_buffer) {
     Serial.println("Failed to allocate buffer for PNG data");
     bmpFile.close();
     return v;
   }
-  Serial.printf("Read %s\n", bmp_path);
+
   // 3. ファイルの内容を全てバッファに読み込む
   bmpFile.read(bmp_data_buffer, bmp_data_size);
   bmpFile.close(); // ファイルはすぐに閉じる
-  Serial.printf("Read Complete %s\n", bmp_path);
 
   int src_width, src_height;
   lgfx::bitmap_header_t bmpheader;
@@ -433,7 +429,6 @@ std::vector<uint8_t> SelPhotoToPalette( String fileName ) {
       v.push_back(crop_data[x][crop_height -1 -y]);
     }
   }
-
 
   return v;
 }
@@ -992,7 +987,6 @@ void loop() {
       delay(500);
     }
     String fileName = photoName;
-    Serial.println(fileName);
     std::vector<uint8_t> v = SelPhotoToPalette(fileName);
     Serial.print("len: ");
     Serial.println(v.size());
