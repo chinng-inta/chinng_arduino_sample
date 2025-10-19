@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <ArduinoJson.h>
 #include <ArduinoJson.hpp>
+#include <M5StackMenuSystem.h>
 #include "WiFi.h"
 #include "UNIT_MiniJoyC.h"
 #include "..\wifi_setting\M5_wifi.h"
@@ -20,6 +21,7 @@ enum JoyKeyDerection {
   DIRECTION_DOWN,
   DIRECTION_RIGHT,
 };
+
 #define DIRECTION_THRESHOLD 75
 #define SAMPLE_TIMES 100
 #define POS_X 0
@@ -114,8 +116,10 @@ void JoyCTask(void* arg ) {
   }
 }
 
+
 String recieveI2C(String sendData, int len) {
   String receivedData = "";
+  bool bExt = false;
   do {
     bool inPacket = false;
     Wire.requestFrom( ATOM_ADDR, len );
@@ -125,6 +129,7 @@ String recieveI2C(String sendData, int len) {
         if (c == ETX) {
           // 受信完了
           inPacket = false;
+          bExt = true;
           break;
         } else {
           receivedData += c;
@@ -136,7 +141,7 @@ String recieveI2C(String sendData, int len) {
     }
     if( receivedData == "busy" ) {
       receivedData = "";
-      delay(10);
+      delay(200);
     }
     if( receivedData == "NoCommand" ) {
       Wire.beginTransmission(ATOM_ADDR);
@@ -147,7 +152,10 @@ String recieveI2C(String sendData, int len) {
       receivedData = "";
       delay(10);
     }
-  } while(receivedData == "" );
+    if(receivedData.length() == 0) {
+      bExt = false;
+    }
+  } while(!bExt);
 
   return receivedData;
 }
@@ -162,14 +170,17 @@ int getAtomInfo() {
   Wire.write(ETX);
   Wire.endTransmission();
 
+  delay(200);
   Serial.println("Start recieve getAtomInfo");
   String receivedJson = recieveI2C(sendData, 256);
   Serial.println("End recieve getAtomInfo");
 
+  Serial.println(receivedJson);
   int len = receivedJson.length();
+  Serial.println(len);
   if(len > 0) {
     //StaticJsonDocument<256> doc;
-    DynamicJsonDocument doc(len + 100);
+    DynamicJsonDocument doc(len*2);
     DeserializationError error = deserializeJson(doc, receivedJson);
 
     if( error ) {
@@ -195,6 +206,23 @@ int getAtomInfo() {
   return iRet;
 }
 
+void showPalette(int palletIdx) {
+  RGBColor* cl1 = canvas.getPalette();
+  uint32_t ccnt = canvas.getPaletteCount();
+  StickCP2.Display.printf("palette%d\n", palletIdx);
+  StickCP2.Display.println(ccnt);
+  for(int i = 0 ; i < ccnt ; i++) {
+      char c[16] = {0};
+      sprintf(c, "%06x", cl1[i]);
+      StickCP2.Display.print(c);
+      if(i%5==4) {
+          StickCP2.Display.println("");
+      } else {
+          StickCP2.Display.print(",");
+      }
+  }
+}
+
 bool getPallete(int palletIdx = 0) {
     String sendData = "GetPalette"+String(palletIdx);
     StickCP2.Display.setCursor(0, 0, 1);
@@ -202,6 +230,7 @@ bool getPallete(int palletIdx = 0) {
     StickCP2.Display.print(sendData);
     StickCP2.Display.println("");
 
+    Wire.flush();
     Wire.beginTransmission(ATOM_ADDR);
     Wire.write(STX);
     Wire.print(sendData);
@@ -270,23 +299,11 @@ bool getPallete(int palletIdx = 0) {
     free(cl);
     vcolor_palette.clear();
 
-    RGBColor* cl1 = canvas.getPalette();
-    uint32_t ccnt = canvas.getPaletteCount();
-    StickCP2.Display.println(ccnt);
-    for(int i = 0 ; i < ccnt ; i++) {
-        char c[16] = {0};
-        sprintf(c, "%06x", cl1[i]);
-        StickCP2.Display.print(c);
-        if(i%5==4) {
-            StickCP2.Display.println("");
-        } else {
-            StickCP2.Display.print(",");
-        }
-    }
+    showPalette(palletIdx);
     return true;
 }
 
-std::vector<uint8_t> getImage(String sendData, bool bShot) {
+std::vector<uint8_t> getImage(String sendData, int iShot = 0) {
   auto resetLcd = []() {
       StickCP2.Display.clear();
       StickCP2.Display.setCursor(0, 0, 1);
@@ -312,6 +329,7 @@ std::vector<uint8_t> getImage(String sendData, bool bShot) {
   Wire.write(ETX);
   Wire.endTransmission();
 
+  delay(500);
   Serial.println("Start recieve jsonLength");
   int jsonLen = 0;
   do {
@@ -342,6 +360,7 @@ std::vector<uint8_t> getImage(String sendData, bool bShot) {
   client.stop();
 
   Serial.printf("Image Recieved %d\n", json_data.length());
+  StickCP2.Display.println("");
   DynamicJsonDocument docImage(json_data.length() *2); // 念のため少し余裕を持たせる
   DeserializationError error = deserializeJson(docImage, json_data);
   
@@ -380,7 +399,7 @@ std::vector<uint8_t> getImage(String sendData, bool bShot) {
   return v;
 }
 
-void drawImage(std::vector<uint8_t> v, bool bShot=false) {
+void drawImage(std::vector<uint8_t> v, int iShot = 0) {
     uint32_t size = (uint32_t)sqrt((float)v.size());
     int dx = (M5.Lcd.width() / 2) - (size / 2);
     int dy = (M5.Lcd.height() / 2) - (size / 2);
@@ -391,9 +410,178 @@ void drawImage(std::vector<uint8_t> v, bool bShot=false) {
         int x = i % size;
         int y = i / size;
         canvas.drawPixel(dx+x, dy+y, v[i]);
-    }    
+    }
+    if(iShot == 1) {
+        buttonDiscriptionCanvas(canvas, "A:Shot", "B:Menu");
+    } else if(iShot == 2) {
+        buttonDiscriptionCanvas(canvas, "A:-", "B:Back");
+    } else {
+        buttonDiscriptionCanvas(canvas, "A:Select", "B:-");
+    }
+
     // メモリ描画領域を座標を指定して一括表示（スプライト）
     canvas.pushSprite(&StickCP2.Display, 0, 0); 
+}
+
+void shotMenu() {
+  int btnA_cur = 0;   // ボタンAのステータス
+  int btnA_last = 0;  // ボタンAの前回ステータス
+
+  int btnB_cur = 0;   // ボタンBのステータス
+  int btnB_last = 0;  // ボタンBの前回ステータス
+  StickCP2.Display.clear();
+  buttonDiscriptionDiret(StickCP2.Display, "A:Shot", "B:Menu");
+
+  while(1) {
+    StickCP2.update();
+    btnA_cur = StickCP2.BtnA.isPressed();
+    btnB_cur = StickCP2.BtnB.isPressed();
+    if( btnA_cur != btnA_last && btnA_cur == 0) {
+      vColorIdx = getImage("doShot", 1);
+      canvas.fillSprite(BLACK);
+      if( vColorIdx.size() > 0 ) {
+          drawImage(vColorIdx, 1);
+      }
+    }
+
+    if( btnB_cur != btnB_last && btnB_cur == 0) {
+      break;
+    }
+
+    btnA_last = btnA_cur;
+    btnB_last = btnB_cur;
+    delay(100);
+  }
+}
+
+void photoMenu() {
+  auto resetLcd = []() {
+      StickCP2.Display.clear();
+      StickCP2.Display.setCursor(0, 0, 1);
+  };
+  int btnA_cur = 0;   // ボタンAのステータス
+  int btnA_last = 0;  // ボタンAの前回ステータス
+
+  int btnB_cur = 0;   // ボタンBのステータス
+  int btnB_last = 0;  // ボタンBの前回ステータス
+  StickCP2.Display.clear();
+  StickCP2.Display.setCursor(0, 0, 1);
+
+  fileMenu_init();
+
+  IPAddress srvIP;
+  srvIP.fromString(ATOMINFO.ssid);
+  uint16_t srvPort = ATOMINFO.port;
+  if (!client.connect(srvIP, srvPort)) {
+    Serial.println("Connection failed.");
+    Serial.print(srvIP);
+    Serial.print(": ");
+    Serial.println(srvPort);
+    return;
+  }
+
+  String sendData = "GetPhotoList";
+  Wire.beginTransmission(ATOM_ADDR);
+  Wire.write(STX);
+  Wire.print(sendData);
+  Wire.write(ETX);
+  Wire.endTransmission();
+
+  delay(500);
+  Serial.println("Start recieve jsonLength");
+  int jsonLen = 0;
+  do {
+    String receivedData = recieveI2C(sendData, 64);
+    jsonLen = receivedData.toInt();
+  } while(jsonLen == 0);
+  Serial.println("End recieve jsonLength");
+  Serial.printf("len: %d\n", jsonLen);
+
+  String json_data;
+  json_data.reserve(jsonLen); 
+  json_data = "";
+  int i = 0;
+  while (client.connected()) {
+    if( i++ % 60 == 0 ) {
+        resetLcd();
+        StickCP2.Display.print(sendData);
+    }
+    if (client.available()) {
+      json_data = client.readStringUntil('\n');
+    }
+    if(json_data.length() > 0) {
+      break;
+    }
+    delay(100);
+    StickCP2.Display.print(".");
+  }
+  client.stop();
+
+  Serial.printf("Image Recieved %d\n", json_data.length());
+  //Serial.println(json_data);
+  StickCP2.Display.println("");
+  DynamicJsonDocument docImage(json_data.length() *2); // 念のため少し余裕を持たせる
+  DeserializationError error = deserializeJson(docImage, json_data);
+  
+  if (error) {
+      StickCP2.Display.println("JSON parse error!");
+  } else {
+    const char* messageType = docImage["Type"].as<const char*>();
+    //StickCP2.Display.printf("Type: %s\n", messageType);
+    Serial.printf("Type: %s\n", messageType);
+
+    if (strcmp(messageType, "FILELIST") == 0) {
+        JsonArray fileArray = docImage["files"].as<JsonArray>();
+        //Serial.println(fileArray);
+        for(int i = 0 ; i < fileArray.size() ; i++ ) {
+            const char* c = fileArray[i].as<const char*>();
+            fileMenu_add(c);
+        }
+    }
+  }
+  json_data.clear();//JSONオブジェクトの領域をメモリから解放
+  while(1) {
+    StickCP2.update();
+    btnA_cur = StickCP2.BtnA.isPressed();
+    btnB_cur = StickCP2.BtnB.isPressed();
+    if( btnA_cur != btnA_last && btnA_cur == 0) {
+      String fileName = fileMenu_Select();
+      Serial.println(fileName);
+      String sendData = "GetPhoto "+fileName;
+      std::vector<uint8_t> v = getImage(sendData, 2);
+      drawImage(v, 2);
+
+      int btnB_cur_sub = 0;   // ボタンBのステータス
+      int btnB_last_sub = 0;  // ボタンBの前回ステータス
+      while(1) {
+        StickCP2.update();
+        btnB_cur_sub = StickCP2.BtnB.isPressed();
+        if( btnB_cur_sub != btnB_last_sub && btnB_cur_sub == 0) {
+           break;
+        }
+        btnB_last_sub = btnB_cur_sub;
+        delay(10);
+      }
+    }
+
+    if( btnB_cur != btnB_last && btnB_cur == 0) {
+      fileMenu_exit();
+      break;
+    }
+    if(currentDirection != prevDirection) {
+      if( currentDirection == DIRECTION_UP ) {
+        fileMenu_Up();
+      }
+      if( currentDirection == DIRECTION_DOWN ) {
+        fileMenu_Down();
+      }
+    }
+    fileMenu_draw();
+    btnA_last = btnA_cur;
+    btnB_last = btnB_cur;
+    prevDirection = currentDirection;
+    delay(100);
+  }
 }
 
 void ColorMenu() {
@@ -402,15 +590,15 @@ void ColorMenu() {
 
   int btnB_cur = 0;   // ボタンBのステータス
   int btnB_last = 0;  // ボタンBの前回ステータス
-  getPallete(g_palletIdx);
+  StickCP2.Display.clear();
+  StickCP2.Display.setCursor(0, 0, 1);
+  showPalette(g_palletIdx);
   while(1) {
     StickCP2.update();
     btnA_cur = StickCP2.BtnA.isPressed();
     btnB_cur = StickCP2.BtnB.isPressed();
     if( btnA_cur != btnA_last && btnA_cur == 0) {
-      if(getPallete(g_palletIdx) < 16){
-        getPallete(g_palletIdx);
-      }
+      getPallete(g_palletIdx);
     }
 
     if( btnB_cur != btnB_last && btnB_cur == 0) {
@@ -424,10 +612,119 @@ void ColorMenu() {
       if( currentDirection == DIRECTION_DOWN ) {
         g_palletIdx = (g_palletIdx+1) % ATOMINFO.paletteCnt;
       }
+      StickCP2.Display.setColor(BLACK);
+      StickCP2.Display.fillRect(0, 0, M5.Lcd.width(), StickCP2.Display.fontHeight());
+      StickCP2.Display.setColor(WHITE);
+      StickCP2.Display.setCursor(0, 0, 1);
+      StickCP2.Display.printf("Get palette%d\n", g_palletIdx);
     }
+    buttonDiscriptionDiret(StickCP2.Display, "A:Get pulette", "B:Menu");
     btnA_last = btnA_cur;
     btnB_last = btnB_cur;
     prevDirection = currentDirection;
+    delay(100);
+  }
+}
+
+void i2cMenu() {
+  int btnB_cur = 0;   // ボタンBのステータス
+  int btnB_last = 0;  // ボタンBの前回ステータス
+
+  StickCP2.Display.clear();
+  StickCP2.Display.setCursor(0, 0, 1);
+  StickCP2.Display.printf("I2C\n");
+  
+  int y = StickCP2.Display.getCursorY();
+  StickCP2.Display.setScrollRect(0, y, M5.Lcd.width(), M5.Lcd.height() - y*2, true);
+
+  auto I2C_Heartbeat = [](int i) {
+    uint32_t start_time = millis();
+
+    String sendData="HeartBeat"+String(i);
+    Wire.flush();
+    Wire.beginTransmission(ATOM_ADDR);
+    Wire.write(STX);
+    Wire.print(sendData);
+    Wire.write(ETX);
+    Wire.endTransmission();
+
+    delay(100);
+    String receivedData = recieveI2C(sendData, 30);
+    uint32_t cur_time = millis();
+    StickCP2.Display.printf("I2C HeartBeat%d: %dmsec\n", i, (cur_time - start_time));
+  }; 
+
+  for( int HBCnt = 0 ; HBCnt < 5 ; HBCnt++ ) {
+    I2C_Heartbeat(HBCnt);
+    delay(500);
+  }
+
+  while(1) {
+    StickCP2.update();
+    btnB_cur = StickCP2.BtnB.isPressed();
+    buttonDiscriptionDiret(StickCP2.Display, "A:-", "B:Menu");
+
+    if( btnB_cur != btnB_last && btnB_cur == 0) {
+      break;
+    }
+
+    btnB_last = btnB_cur;
+    delay(100);
+  }
+  StickCP2.Display.setTextScroll(false);
+}
+
+void wifiMenu() {
+  int btnB_cur = 0;   // ボタンBのステータス
+  int btnB_last = 0;  // ボタンBの前回ステータス
+
+  StickCP2.Display.clear();
+  StickCP2.Display.setCursor(0, 0, 1);
+  StickCP2.Display.printf("WI-FI\n");
+  IPAddress ip = WiFi.localIP();
+  String sIP = "My IP Address: " + ip.toString();
+  StickCP2.Display.println(sIP);
+  StickCP2.Display.println("");
+
+  IPAddress srvIP;
+  srvIP.fromString(ATOMINFO.ssid);
+  uint16_t srvPort = ATOMINFO.port;
+
+  StickCP2.Display.printf("SSID: %s\n", ATOMINFO.ssid);
+  StickCP2.Display.printf("PORT: %d\n", srvPort);
+  StickCP2.Display.printf("Wifi Status: ");
+
+  int curX = StickCP2.Display.getCursorX();
+  int curY = StickCP2.Display.getCursorY();
+
+  bool bConnected = false;
+  if (client.connect(srvIP, srvPort)) {
+    bConnected = true;
+  }
+  buttonDiscriptionDiret(StickCP2.Display, "A:-", "B:Menu");
+
+  uint32_t startTime = millis();
+
+  while(1) {
+    uint32_t curTime = millis();
+    StickCP2.update();
+    btnB_cur = StickCP2.BtnB.isPressed();
+    if( btnB_cur != btnB_last && btnB_cur == 0) {
+      break;
+    }
+    if( curTime > startTime && curTime - startTime > 1000 ) {
+      StickCP2.Display.setCursor(curX, curY);
+      String sCon = "Unconnected";
+      if(bConnected) {
+        client.stop();
+        bConnected = false;
+        sCon = "Connected";
+      }
+      StickCP2.Display.println(sCon);
+      startTime = (uint32_t) __UINT32_MAX__;
+    }
+
+    btnB_last = btnB_cur;
     delay(100);
   }
 }
@@ -437,12 +734,33 @@ void getIcon() {
     vMenuColor.clear();
     for(int i = 0 ; i < ATOMINFO.menuCnt ; i++) {
       String sendData = "GetIcon"+String(i);
-      std::vector<uint8_t> v = getImage(sendData,false);
+      std::vector<uint8_t> v = getImage(sendData, 0);
       vMenuColor.push_back(v);
     }
-    drawImage(vMenuColor[g_iMenuIdx], false);
+    drawImage(vMenuColor[g_iMenuIdx], 0);
   }
 }
+
+void buttonDiscriptionDiret(M5GFX display, String btnADisc, String btnBDisc) {
+  int y = display.fontHeight();
+  int x = display.textWidth(btnADisc);
+  display.setCursor(0, M5.Lcd.height() - y, 1);
+  display.printf("%s", btnBDisc.c_str());
+
+  display.setCursor(M5.Lcd.width() - x, M5.Lcd.height() - y, 1);
+  display.printf("%s", btnADisc.c_str());
+}
+
+void buttonDiscriptionCanvas(M5Canvas display, String btnADisc, String btnBDisc) {
+  int y = display.fontHeight();
+  int x = display.textWidth(btnADisc);
+  display.setCursor(0, M5.Lcd.height() - y, 1);
+  display.printf("%s", btnBDisc.c_str());
+
+  display.setCursor(M5.Lcd.width() - x, M5.Lcd.height() - y, 1);
+  display.printf("%s", btnADisc.c_str());
+}
+
 
 void setup() {
   // put your setup code here, to run once:
@@ -463,15 +781,17 @@ void setup() {
   canvas.createSprite(M5.Lcd.width(), M5.Lcd.height());
 
   Wire.begin();
+  Wire.flush();
   getAtomInfo();
 
   Wire1.end();
   delay(100);
   StickCP2.Display.println("wait joyc");
   while (!(sensor.begin(&Wire1, JoyC_ADDR, 0, 26, 100000UL))) {
-      delay(100);
       StickCP2.Display.setCursor(0, 15, 1);
       StickCP2.Display.println("I2C Error!");
+      Serial.println("I2C Error!");
+      delay(100);
   }
   StickCP2.Display.println("connect joyc");
   xTaskCreatePinnedToCore(JoyCTask, "", 8192, NULL, 1, NULL, 1);
@@ -480,7 +800,7 @@ void setup() {
   StickCP2.Display.println("Attempting to connect to SSID:");
   StickCP2.Display.print(ATOMINFO.ssid);
   status = WiFi.begin(ssid, pass);
-    while (WiFi.status() != WL_CONNECTED) {
+  while (WiFi.status() != WL_CONNECTED) {
       delay(1000);
       StickCP2.Display.print(".");
   }
@@ -490,7 +810,7 @@ void setup() {
   String sIP = "My IP Address: " + ip.toString();
   StickCP2.Display.println(sIP);
 
-  if(getPallete(g_palletIdx) < 16){
+  if(getPallete(g_palletIdx) == false){
     getPallete(g_palletIdx);
   }
   getIcon();
@@ -504,10 +824,10 @@ void loop() {
   btnB_cur_value = StickCP2.BtnB.isPressed();
   if(ATOMINFO.menuCnt == 0) {
     if( btnA_cur_value != btnA_last_value && btnA_cur_value == 0) {
-        vColorIdx = getImage("doShot",true);
+        vColorIdx = getImage("doShot", 1);
         canvas.fillSprite(BLACK);
         if( vColorIdx.size() > 0 ) {
-            drawImage(vColorIdx, true);
+            drawImage(vColorIdx, 1);
         }
     }
 
@@ -516,7 +836,9 @@ void loop() {
       if( g_palletIdx >= ATOMINFO.paletteCnt) {
         g_palletIdx = 0;
       }
-      getPallete(g_palletIdx);
+      if(getPallete(g_palletIdx) == false){
+        getPallete(g_palletIdx);
+      }
     }
   } else {
     canvas.fillSprite(BLACK);
@@ -528,7 +850,7 @@ void loop() {
       if( currentDirection == DIRECTION_RIGHT ) {
         g_iMenuIdx = (g_iMenuIdx+1) % ATOMINFO.menuCnt;
       }
-      drawImage(vMenuColor[g_iMenuIdx], false);
+      drawImage(vMenuColor[g_iMenuIdx], 0);
     }
 
     if( btnA_cur_value != btnA_last_value && btnA_cur_value == 0) {
@@ -536,18 +858,28 @@ void loop() {
         ColorMenu();
         getIcon();
       } else if(g_iMenuIdx == e_Camera) {
-      vColorIdx = getImage("doShot",true);
+        shotMenu();
         canvas.fillSprite(BLACK);
-        if( vColorIdx.size() > 0 ) {
-            drawImage(vColorIdx, true);
-        }
+        drawImage(vMenuColor[g_iMenuIdx], 0);
+      } else if(g_iMenuIdx == e_I2CStatus) {
+        i2cMenu();
+        canvas.fillSprite(BLACK);
+        drawImage(vMenuColor[g_iMenuIdx], 0);
+      } else if(g_iMenuIdx == e_Photo) {
+        photoMenu();
+        canvas.fillSprite(BLACK);
+        drawImage(vMenuColor[g_iMenuIdx], 0);
+      } else if(g_iMenuIdx == e_WifiStatus) {
+        wifiMenu();
+        canvas.fillSprite(BLACK);
+        drawImage(vMenuColor[g_iMenuIdx], 0);
       } else {
-
+        //e_Setting,
       }
-
     }
   }
   btnA_last_value = btnA_cur_value;
   btnB_last_value = btnB_cur_value;
   prevDirection = currentDirection;
+  delay(10);
 }
