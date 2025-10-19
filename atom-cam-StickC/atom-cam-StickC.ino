@@ -454,7 +454,6 @@ void shotMenu() {
   }
 }
 
-
 void photoMenu() {
   auto resetLcd = []() {
       StickCP2.Display.clear();
@@ -675,6 +674,61 @@ void i2cMenu() {
   StickCP2.Display.setTextScroll(false);
 }
 
+void wifiMenu() {
+  int btnB_cur = 0;   // ボタンBのステータス
+  int btnB_last = 0;  // ボタンBの前回ステータス
+
+  StickCP2.Display.clear();
+  StickCP2.Display.setCursor(0, 0, 1);
+  StickCP2.Display.printf("WI-FI\n");
+  IPAddress ip = WiFi.localIP();
+  String sIP = "My IP Address: " + ip.toString();
+  StickCP2.Display.println(sIP);
+  StickCP2.Display.println("");
+
+  IPAddress srvIP;
+  srvIP.fromString(ATOMINFO.ssid);
+  uint16_t srvPort = ATOMINFO.port;
+
+  StickCP2.Display.printf("SSID: %s\n", ATOMINFO.ssid);
+  StickCP2.Display.printf("PORT: %d\n", srvPort);
+  StickCP2.Display.printf("Wifi Status: ");
+
+  int curX = StickCP2.Display.getCursorX();
+  int curY = StickCP2.Display.getCursorY();
+
+  bool bConnected = false;
+  if (client.connect(srvIP, srvPort)) {
+    bConnected = true;
+  }
+  buttonDiscriptionDiret(StickCP2.Display, "A:-", "B:Menu");
+
+  uint32_t startTime = millis();
+
+  while(1) {
+    uint32_t curTime = millis();
+    StickCP2.update();
+    btnB_cur = StickCP2.BtnB.isPressed();
+    if( btnB_cur != btnB_last && btnB_cur == 0) {
+      break;
+    }
+    if( curTime > startTime && curTime - startTime > 1000 ) {
+      StickCP2.Display.setCursor(curX, curY);
+      String sCon = "Unconnected";
+      if(bConnected) {
+        client.stop();
+        bConnected = false;
+        sCon = "Connected";
+      }
+      StickCP2.Display.println(sCon);
+      startTime = (uint32_t) __UINT32_MAX__;
+    }
+
+    btnB_last = btnB_cur;
+    delay(100);
+  }
+}
+
 void getIcon() {
   if( ATOMINFO.menuCnt > 0 ) {
     vMenuColor.clear();
@@ -811,12 +865,15 @@ void loop() {
         i2cMenu();
         canvas.fillSprite(BLACK);
         drawImage(vMenuColor[g_iMenuIdx], 0);
-      }else if(g_iMenuIdx == e_Photo) {
+      } else if(g_iMenuIdx == e_Photo) {
         photoMenu();
         canvas.fillSprite(BLACK);
         drawImage(vMenuColor[g_iMenuIdx], 0);
+      } else if(g_iMenuIdx == e_WifiStatus) {
+        wifiMenu();
+        canvas.fillSprite(BLACK);
+        drawImage(vMenuColor[g_iMenuIdx], 0);
       } else {
-        //e_WifiStatus,
         //e_Setting,
       }
     }
