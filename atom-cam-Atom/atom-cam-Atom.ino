@@ -10,6 +10,9 @@
 #include <ArduinoJson.h>
 #include <ArduinoJson.hpp>
 #include "WiFi.h"
+// wifiの設定は別ファイルで定義しています。
+// Arduinoフォルダにwifi_settingフォルダ、
+// そのフォルダにM5_wifi.hを置いてください
 #include "..\wifi_setting\M5_wifi.h"
 
 #define LEDIR_PIN 47
@@ -23,8 +26,11 @@ const int icon_width = 64;
 const int icon_height = 64;
 
 camera_fb_t* fb;
+// 画像切り出し用のバッファ、ローカル変数で定義すると
+// スタックオーバーする。allocしてもいいが、面倒なのでグローバル変数にする
 uint8_t crop_data[crop_width][crop_height];
 
+// 写真撮影128x128とアイコン64x64の操作に使うキャンバス
 M5Canvas canvas0;
 M5Canvas canvas1;
 
@@ -41,6 +47,7 @@ WiFiClient client;
 #define MOSI_PIN  6
 #define CS_PIN    5
 
+// カラーパレットとメニューの定義
 std::vector<std::vector<uint32_t>> vcolor_palette;
 
 #define MENU_MAX 4
@@ -49,10 +56,12 @@ std::vector<std::vector<uint32_t>> vcolor_palette;
 int iMenuIconCnt = 0;
 int iPaletteCnt = 0;
 
+// ファイル名に使用する変数定義
 uint32_t keyOnTime = 0;             // キースイッチを操作した時間
 int filecounter = 1;
 std::vector<String> paletteFile;
 
+// M5 StickC Plus2とのI2C通信の定義
 #define ATOM_ADDR 0x4B
 #define STX 0x02
 #define ETX 0x03
@@ -82,6 +91,7 @@ enum SlaveState {
 
 volatile uint8_t dataState = STATE_IDLE;
 String i2CSendData = "";
+
 camera_config_t camera_config = {
   .pin_pwdn     = PWDN_GPIO_NUM,
   .pin_reset    = RESET_GPIO_NUM,
@@ -122,6 +132,7 @@ camera_config_t camera_config = {
   .sccb_i2c_port =1,
 };
 
+// I2Cマスターからの受信ハンドラ
 void onReceived( int len ) {
   bool inPacket = false;
   String i2cRecieve = "";
@@ -147,10 +158,11 @@ void onReceived( int len ) {
   }
 
   if(i2cRecieve.compareTo("doShot") == 0 ){
+    // 写真撮影
     cmdType = CMD_SHOT;
     dataState = STATE_PROCESSING;
   } else if(i2cRecieve.indexOf("GetPhoto") != -1 && i2cRecieve.compareTo("GetPhotoList") != 0 ) {
-    // カラーパレット取得
+    // 画像表示
     String strFileName = i2cRecieve;
     strFileName.replace("GetPhoto", "");
     strFileName.trim();
@@ -168,7 +180,7 @@ void onReceived( int len ) {
     paletteIdx = iIdx;
     dataState = STATE_PROCESSING;
   } else if(i2cRecieve.indexOf("GetIcon") != -1) {
-    // カラーパレット取得
+    // アイコン取得
     String strIdx = i2cRecieve;
     strIdx.replace("GetIcon", "");
     strIdx.trim();
@@ -182,7 +194,7 @@ void onReceived( int len ) {
     cmdType = CMD_GET_ATOMINFO;
     dataState = STATE_PROCESSING;
   } else if(i2cRecieve.indexOf("HeartBeat") != -1) {
-    // AtomS3Rの情報取得
+    // I2Cの接続確認
     cmdType = CMD_GET_HEARTBEAT;
     dataState = STATE_PROCESSING;
   } else if(i2cRecieve.compareTo("GetPhotoList") == 0) {
@@ -252,6 +264,7 @@ std::pair<uint32_t, uint8_t> findClosestColor(uint32_t originalColor) {
   return std::make_pair(closestColor, closestIndex);
 }
 
+// 撮影した写真をカラーパレットに変換
 std::vector<uint8_t> originalToPalette() {
   std::vector<uint8_t> v;
   const int bayer4x4[4][4] = {
@@ -314,6 +327,7 @@ std::vector<uint8_t> originalToPalette() {
   return v;
 }
 
+// アイコン画像をカラーパレットに変換
 std::vector<uint8_t> IconToPalette() {
   std::vector<uint8_t> v;
   char png_path[64];
@@ -321,11 +335,13 @@ std::vector<uint8_t> IconToPalette() {
   sprintf(png_path, "/ICON/%d.png", iconIdx);
 
   // canvas1.drawBmpFile(SD, png_path, 0, 0); // はヘッダ回りでコンパイルエラーになったので、地道に算出
-  File pngFile = SD.open(png_path, "r"); // まずファイルを開く
+  // 1. ファイルを開く
+  File pngFile = SD.open(png_path, "r");
   if (!pngFile) {
     Serial.printf("Error: Failed to open %s for reading.\n", png_path);
     return v;
   }
+  // 2. バッファ獲得
   size_t png_data_size = pngFile.size();
   uint8_t* png_data_buffer = (uint8_t*)heap_caps_malloc(png_data_size, MALLOC_CAP_SPIRAM);
   
@@ -363,6 +379,7 @@ std::vector<uint8_t> IconToPalette() {
   return v;
 }
 
+// 過去に撮影した画像をカラーパレットに変換
 std::vector<uint8_t> SelPhotoToPalette( String fileName ) {
   std::vector<uint8_t> v;
   char bmp_path[128];
@@ -371,12 +388,14 @@ std::vector<uint8_t> SelPhotoToPalette( String fileName ) {
   Serial.printf("%s\n", bmp_path);
 
   // canvas1.drawBmpFile(SD, bmp_path, 0, 0); // はヘッダ回りでコンパイルエラーになったので、地道に算出
-  File bmpFile = SD.open(bmp_path, "r"); // まずファイルを開く
+  // 1. ファイルを開く
+  File bmpFile = SD.open(bmp_path, "r");
   if (!bmpFile) {
     Serial.printf("Error: Failed to open %s for reading.\n", bmp_path);
     return v;
   }
 
+  // 2. バッファ獲得
   size_t bmp_data_size = bmpFile.size();
   uint8_t* bmp_data_buffer = (uint8_t*)heap_caps_malloc(bmp_data_size, MALLOC_CAP_SPIRAM);
 
@@ -390,6 +409,7 @@ std::vector<uint8_t> SelPhotoToPalette( String fileName ) {
   bmpFile.read(bmp_data_buffer, bmp_data_size);
   bmpFile.close(); // ファイルはすぐに閉じる
 
+  // 4. bitmapヘッダから、画像の切り抜き範囲を算出
   int src_width, src_height;
   lgfx::bitmap_header_t bmpheader;
   memcpy(&bmpheader, bmp_data_buffer, sizeof(lgfx::bitmap_header_t));
@@ -423,7 +443,7 @@ std::vector<uint8_t> SelPhotoToPalette( String fileName ) {
   }
   canvas1.deleteSprite();  // png読み込み用スプライト解放
   
-  // カメラUSBポート下側の画像が撮れるので、90度回転させる
+  // オリジナル画像はカメラUSBポート下側の画像なので、90度回転させる
   for (int y = 0; y < crop_height; y++) {
     for (int x = 0; x < crop_width; x++) {
       v.push_back(crop_data[x][crop_height -1 -y]);
@@ -433,6 +453,7 @@ std::vector<uint8_t> SelPhotoToPalette( String fileName ) {
   return v;
 }
 
+// 画像の送信
 void sendImage(std::vector<uint8_t> v) {
   client = server.available();
   if (!client) {
@@ -440,6 +461,8 @@ void sendImage(std::vector<uint8_t> v) {
     return;
   }
 
+  // 画像パレットは0x0～0xf(0～15)で4bitしか使用しない
+  // データサイズ圧縮のため、32bit変数に8px分データを詰める
   DynamicJsonDocument doc(v.size()); // 念のため少し余裕を持たせる
   doc["Type"] = "ICON";
   JsonArray dataArray = doc.createNestedArray("data");
@@ -461,6 +484,7 @@ void sendImage(std::vector<uint8_t> v) {
 
 }
 
+// ファイルの一覧をM5 StickC Plus2へ送信
 void SendFileList() {
   client = server.available();
   if (!client) {
@@ -497,7 +521,9 @@ bool CameraBegin() {
                          // s->set_colorbar(s, 1); //カラーバー 0無効 1有効
                          // s->set_brightness(s, 1);  // up the brightness just a bit
                          // s->set_saturation(s, 0);  // lower the saturation
-  
+
+  // 将来的にM5 StickC Plus2側からカメラ設定を操作できるようにするため、
+  // 取得可能な項目すべて表示してみた
 #if 0
   s->set_brightness(s, 0); // -2 から 2
   // ホワイトバランス
@@ -585,6 +611,7 @@ void saveToSD_OriginalBMP() {
 
     String strFileName = filename;
     strFileName.replace("/Original/", "");
+    // 撮影したした画像名を画像一覧に追加
     paletteFile.push_back(strFileName);
   } else {
     Serial.printf("Failed to save %s\n", filename);
@@ -665,6 +692,9 @@ std::vector<String> listFiles(fs::FS &fs, const char * dirname, int levels, bool
     return vFile;
   }
 
+  // TFCard Readerのサンプルでは、ファイルオープンするためファイル一覧取得に時間がかかる
+  // getNextFileNameの場合、ファイルオープンしないので高速にファイル一覧を取得できる
+  // https://qiita.com/Fujix/items/6213bb42700a24aaa11e
   bool isDir;
   String fileName = root.getNextFileName(&isDir);
 
@@ -697,6 +727,7 @@ std::vector<String> listFiles(fs::FS &fs, const char * dirname, int levels, bool
   return vFile;
 }
 
+// カラーパレットのJson読み込み
 void jsonLoad() {
   String filename = "/setting/color.json";
   int iconCnt = 0;
@@ -721,6 +752,7 @@ void jsonLoad() {
     uint64_t cardSize = SD.cardSize() / (1024 * 1024);
     Serial.printf("SD Card Size: %lluMB\n", cardSize);
 
+    // ついでに撮影した画像一覧とアイコン用の画像の数もカウントする
     Serial.println("file check");
 //    listFiles(SD, "/", 0, true);
     paletteFile = listFiles(SD, "/Original/", 0, false);
@@ -786,6 +818,7 @@ void jsonLoad() {
   }
   
 GETSETTING_FAIL:
+  // カラーパレットが読み込めなかったときはデフォルトの値を使う
   if(!bRead) {
     uint32_t default_colors[16] = {
         0x000000, 0x808080, 0xc0c0c0, 0xffffff,
@@ -816,9 +849,10 @@ void setup() {
   //M5.begin(cfg);
   M5.begin();
 
+  // カメラ初期化
   pinMode(POWER_GPIO_NUM, OUTPUT);
   digitalWrite(POWER_GPIO_NUM, LOW);
-  Wire1.end();
+  Wire1.end(); // M5.begin()の中でWire1初期化されているっぽいため、endする
   delay(500);
 
   Serial.println("PSRAM Check");
@@ -831,7 +865,6 @@ void setup() {
   }
 
   Serial.println("CameraBegin");
-  Wire1.end();
 
   if (!CameraBegin()) {
     Serial.println("CameraBegin Fail");
@@ -846,6 +879,8 @@ void setup() {
   Serial.println(myIP);
   server.begin();
 
+  // SDカード初期化
+  // fork元の環境と違い一度ではSD初期化成功しなかった
   Serial.println("SPI.begin");
   SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, -1);
   while (false == SD.begin(CS_PIN, SPI, 1000000UL)) {
@@ -857,12 +892,13 @@ void setup() {
   jsonLoad();
   SD.end();
 
+  // M5 StickC Plus2とのI2C通信の設定
   Wire.begin(ATOM_ADDR);
   Wire.onReceive( onReceived );
   Wire.onRequest( onRequest );
   delay(500);
 
-  canvas0.createSprite(176, 144);
+  canvas0.createSprite(crop_width, crop_height);
   Serial.println("Setup End");
 }
 
@@ -872,7 +908,9 @@ void loop() {
     return;
   }
   // put your main code here, to run repeatedly:
+  // M5 StickC Plus2からI2C通信を受信した場合のイベントドリブンで動作する
   if(cmdType == CMD_GET_ATOMINFO) {
+    // M5 Atomの情報取得
     Serial.println("CMD_GET_ATOMINFO");
     StaticJsonDocument<512> doc;
     IPAddress myIP = WiFi.softAPIP();
@@ -881,11 +919,15 @@ void loop() {
     doc["menuCnt"] = iMenuIconCnt;
     doc["paletteCnt"] = iPaletteCnt;
 
+    // JsonデータをI2Cでそのまま送信
     String jsonString;
     serializeJson(doc, jsonString);
     i2CSendData = jsonString;
     dataState = STATE_READY_TO_SEND;
   } else if(cmdType == CMD_GET_PALETTE) {
+    // カラーパレット取得
+    // 6桁x16+1(,)x16の112文字I2Cで送信
+    // (jsonにするとI2Cの受信バッファあふれる)
     Serial.println("CMD_GET_PALETTE");
     i2CSendData="";
     for( int i = 0 ; i < vcolor_palette[paletteIdx].size() ; i++ ) {
@@ -895,6 +937,7 @@ void loop() {
     }
     dataState = STATE_READY_TO_SEND;
   } else if (cmdType == CMD_SHOT) {
+    // 写真撮影
     keyOnTime = millis();  // 最後にkey操作した時間
     Serial.println("CMD_SHOT");
     SD.end();  // 念のため一旦END
@@ -907,11 +950,14 @@ void loop() {
     saveToSD_OriginalBMP();  // 変換前の画像保存
     
     //saveGraylevel_fromFb();
+    // 撮影した画像をカラーパレットのインデックスに変換
     std::vector<uint8_t> v = originalToPalette();
     
     Serial.print("len: ");
     Serial.println(v.size());
 
+    // I2Cで画像のサイズを送信
+    // 画像データjsonのバッファはどんぶり勘定で取得
     char c[32];
     memset(c, 0, 32);
     sprintf(c, "%d", v.size());
@@ -924,26 +970,31 @@ void loop() {
     }
     Serial.println("Length sent");
     
+    // Wifiで画像データ送信
     sendImage(v);
+
+    // カラーパレットで変換した画像を保存
     saveToSD_ConvertBMP(v);
 
     CameraFree();   // フレームバッファを解放
     filecounter++;
     SD.end();
   } else if (cmdType == CMD_GET_ICON) {
+    // アイコン画像の取得
     Serial.println("CMD_ICON");
     SD.end();  // 念のため一旦END
     delay(100);
-    //SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, -1);
     while (false == SD.begin(CS_PIN, SPI, 1000000UL) ) {
       Serial.println("SD Wait...");
       delay(500);
     }
     
+    // アイコンをカラーパレットのインデックスに変換
     std::vector<uint8_t> v = IconToPalette();
     Serial.print("len: ");
     Serial.println(v.size());
 
+    // I2Cで画像のサイズを送信
     char c[32];
     memset(c, 0, 32);
     sprintf(c, "%d", v.size());
@@ -957,14 +1008,18 @@ void loop() {
     }
     Serial.println("Length sent");
     
+    // Wifiで画像データ送信
     sendImage(v);
   } else if(cmdType == CMD_GET_HEARTBEAT) {
+    // I2Cのハートビート応答、応答データは適当に返す
     Serial.println("CMD_GET_HEARTBEAT");
     i2CSendData="0";
     dataState = STATE_READY_TO_SEND;
   } else if(cmdType == CMD_GET_PHOTO_LIST) {
+    // 画像一覧取得
     Serial.println("CMD_GET_PHOTO_LIST");
 
+    // 画像一覧の送信データサイズをI2Cで送信
     char c[32];
     memset(c, 0, 32);
     sprintf(c, "%d", paletteFile.size());
@@ -976,16 +1031,19 @@ void loop() {
       delay(10);
     }
     Serial.println("Length sent");
-    SendFileList();
+
+    SendFileList(); // 画像一覧をwifiで送信
   } else if (cmdType == CMD_GET_PHOTO) {
+    // 画像表示
     Serial.println("CMD_GET_PHOTO");
     SD.end();  // 念のため一旦END
     delay(100);
-    //SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, -1);
     while (false == SD.begin(CS_PIN, SPI, 1000000UL)) {
       Serial.println("SD Wait...");
       delay(500);
     }
+
+    // 画像データをSDカードから読み込んで、カラーパレットのインデックスに変換
     String fileName = photoName;
     std::vector<uint8_t> v = SelPhotoToPalette(fileName);
     Serial.print("len: ");
@@ -993,6 +1051,7 @@ void loop() {
     photoName = "";
     SD.end();
 
+    // I2Cで画像のサイズを送信
     char c[32];
     memset(c, 0, 32);
     sprintf(c, "%d", v.size());
@@ -1005,6 +1064,7 @@ void loop() {
     }
     Serial.println("Length sent");
     
+    // Wifiで画像データ送信
     sendImage(v);
   } else {
     //Serial.println("CMD_UNKNOWN");
