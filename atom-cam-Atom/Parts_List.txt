@@ -5,14 +5,16 @@ https://shop.m5stack.com/products/atoms3r-camera-kit
 ・ATOMIC TFカードリーダー
 https://www.switch-science.com/products/9423
 https://shop.m5stack.com/products/atomic-tf-card-reader
-・M5Stack用メカニカルキーボタンユニット
-https://www.switch-science.com/products/8303
-https://shop.m5stack.com/products/mechanical-key-button-unit
 ・ATOM TailBAT
 https://www.switch-science.com/products/6348
 https://shop.m5stack.com/products/atom-tailbat?variant=32169047064666
-・LEGO テクニック 固定ピン 2本(Amazon 楽天などで入手可能)
-https://amzn.to/4iItP41
 ・microSDカード　16GBまで
 https://amzn.to/4hnl7XS
+
+・M5StickC Plus2
+https://www.switch-science.com/products/9350
+https://docs.m5stack.com/ja/core/M5StickC%20PLUS2
+・Hat Mini JoyC
+https://www.switch-science.com/products/8781
+https://docs.m5stack.com/ja/hat/MiniJoyC
 */
