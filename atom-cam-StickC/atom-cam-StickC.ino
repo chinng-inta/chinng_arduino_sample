@@ -74,6 +74,11 @@ int btnA_last_value = 0;  // ボタンAの前回ステータス
 int btnB_cur_value = 0;   // ボタンBのステータス
 int btnB_last_value = 0;  // ボタンBの前回ステータス
 
+/**
+ * @brief ジョイスティックコントローラーのタスク関数
+ * @details ジョイスティックの中央位置をキャリブレーションし、継続的に方向を監視する
+ * @param arg タスクパラメータ（未使用）
+ */
 void JoyCTask(void* arg ) {
   int16_t adc_mid_x, adc_mid_y;
   uint16_t adc_cal_data[6];
@@ -125,7 +130,13 @@ void JoyCTask(void* arg ) {
   }
 }
 
-// I2Cの応答受信関数
+/**
+ * @brief I2C通信でデータを受信する関数
+ * @details STX/ETXフレーミングを使用してAtomデバイスからデータを受信
+ * @param sendData 送信するコマンドデータ
+ * @param len 受信バッファの最大長
+ * @return 受信したデータ文字列
+ */
 String recieveI2C(String sendData, int len) {
   String receivedData = "";
   bool bExt = false;
@@ -169,6 +180,11 @@ String recieveI2C(String sendData, int len) {
   return receivedData;
 }
 
+/**
+ * @brief M5 Atomデバイスの情報を取得する
+ * @details I2C通信でAtomデバイスからSSID、ポート、メニュー数、パレット数を取得
+ * @return 成功時0、失敗時負の値
+ */
 int getAtomInfo() {
   Serial.println("Start getAtomInfo");
   int iRet = -1;
@@ -219,6 +235,11 @@ int getAtomInfo() {
   return iRet;
 }
 
+/**
+ * @brief カラーパレットを画面に表示する
+ * @details 指定されたパレットインデックスのカラー情報を16進数で表示
+ * @param palletIdx 表示するパレットのインデックス
+ */
 void showPalette(int palletIdx) {
   RGBColor* cl1 = canvas.getPalette();
   uint32_t ccnt = canvas.getPaletteCount();
@@ -236,7 +257,12 @@ void showPalette(int palletIdx) {
   }
 }
 
-// カラーパレット情報をM5 Atomから受信
+/**
+ * @brief M5 Atomからカラーパレット情報を受信する
+ * @details I2C通信でパレットデータを取得し、カンバスに設定する
+ * @param palletIdx 取得するパレットのインデックス（デフォルト: 0）
+ * @return 成功時true、失敗時false
+ */
 bool getPallete(int palletIdx = 0) {
     String sendData = "GetPalette"+String(palletIdx);
     StickCP2.Display.setCursor(0, 0, 1);
@@ -321,7 +347,13 @@ bool getPallete(int palletIdx = 0) {
     return true;
 }
 
-// M5 Atomから画像を受信
+/**
+ * @brief M5 Atomから画像データを受信する
+ * @details I2CとWiFi通信を組み合わせて画像データを取得し、ピクセル配列として返す
+ * @param sendData 送信するコマンド文字列
+ * @param iShot 撮影モード（0: 通常, 1: 撮影, 2: 表示）
+ * @return 画像ピクセルデータのベクター
+ */
 std::vector<uint8_t> getImage(String sendData, int iShot = 0) {
   auto resetLcd = []() {
       StickCP2.Display.clear();
@@ -331,6 +363,13 @@ std::vector<uint8_t> getImage(String sendData, int iShot = 0) {
   resetLcd();
   Serial.print("Start ");
   Serial.println(sendData);
+
+  uint32_t prevT = millis();
+  auto serialPrintTime = [&prevT](String str = "") {
+    uint32_t curr = millis();
+    Serial.printf("%s: %dms\n", str.c_str(), curr - prevT);
+    prevT = curr;
+  };
 
   // 画像データはサイズが大きいため、wifiで受信する
   IPAddress srvIP;
@@ -351,9 +390,10 @@ std::vector<uint8_t> getImage(String sendData, int iShot = 0) {
   Wire.print(sendData);
   Wire.write(ETX);
   Wire.endTransmission();
+  serialPrintTime("Send I2C");
 
   // 2. 画像サイズをI2Cで受け取る
-  delay(500);
+  delay(100);
   Serial.println("Start recieve jsonLength");
   int jsonLen = 0;
   do {
@@ -362,6 +402,7 @@ std::vector<uint8_t> getImage(String sendData, int iShot = 0) {
   } while(jsonLen == 0);
   Serial.println("End recieve jsonLength");
   Serial.printf("len: %d\n", jsonLen);
+  serialPrintTime("recieve jsonLength");
 
   // 3. 受信した画像サイズで、Json用のバッファを確保
   String json_data;
@@ -376,20 +417,24 @@ std::vector<uint8_t> getImage(String sendData, int iShot = 0) {
         StickCP2.Display.print(sendData);
     }
     if (client.available()) {
-      json_data = client.readStringUntil('\n');
+      //json_data = client.readStringUntil('\n');
+      json_data += client.readString();
     }
-    if(json_data.length() > 0) {
+    //if(json_data.length() > 0) {
+    if(json_data.indexOf('\n') != -1) {
       break;
     }
-    delay(100);
+    delay(10);
     StickCP2.Display.print(".");
   }
   client.stop();
-
   Serial.printf("Image Recieved %d\n", json_data.length());
+  serialPrintTime("Image Recieve");
+
   DynamicJsonDocument docImage(json_data.length() *2); // 念のため少し余裕を持たせる
   DeserializationError error = deserializeJson(docImage, json_data);
   
+  serialPrintTime("deserialize Json");
   // 5. 受信した画像データを表示用のvectorに格納
   if (error) {
       StickCP2.Display.println("JSON parse error!");
@@ -400,17 +445,22 @@ std::vector<uint8_t> getImage(String sendData, int iShot = 0) {
 
     if (strcmp(messageType, "ICON") == 0) {
         JsonArray imageArray = docImage["data"].as<JsonArray>();
+        size_t total_pixels = imageArray.size() * 8;
+        v.resize(total_pixels); // 事前に必要なメモリを確保し、サイズを設定
+        uint8_t* pixel_ptr = v.data(); // ベクターの生ポインタを取得
         for(int i = 0 ; i < imageArray.size() ; i++ ) {
+            uint32_t packed_pixels = imageArray[i].as<uint32_t>(); // 32ビットのパックされたピクセル値を一度取得
             for(int j = 0 ; j < 8 ; j++) {
-                int px = ((uint32_t)(imageArray[i]) >> (4*j)) & 0xf;
-                v.push_back(px);
+                //int px = ((uint32_t)(imageArray[i]) >> (4*j)) & 0xf;
+                //v.push_back(px);
+                *pixel_ptr++ = (packed_pixels >> (4*j)) & 0xf; // 生ポインタに直接書き込み
             }
-            if(i==0) {
-              for(int j = 0 ; j < v.size(); j++) {
-                Serial.printf("%x,", v[j]);
-              }
-              Serial.println("");
-            }
+            // if(i==0) {
+            //   for(int j = 0 ; j < v.size(); j++) {
+            //     Serial.printf("%x,", v[j]);
+            //   }
+            //   Serial.println("");
+            // }
         }
         StickCP2.Display.printf("len: %d\n", v.size());
         Serial.printf("len: %d\n", v.size());
@@ -418,6 +468,7 @@ std::vector<uint8_t> getImage(String sendData, int iShot = 0) {
     M5.Display.setTextColor(WHITE);
   }
   json_data.clear();//JSONオブジェクトの領域をメモリから解放
+  serialPrintTime("Parse Json");
       
   StickCP2.Display.println(sendData + " recieved");
   StickCP2.Display.print(v.size());
@@ -426,7 +477,12 @@ std::vector<uint8_t> getImage(String sendData, int iShot = 0) {
   return v;
 }
 
-// 画像の表示
+/**
+ * @brief 画像データを画面に描画する
+ * @details ピクセルデータを正方形画像として画面中央に表示し、ボタン説明を追加
+ * @param v 画像ピクセルデータのベクター
+ * @param iShot 表示モード（0: 通常, 1: 撮影, 2: 表示）
+ */
 void drawImage(std::vector<uint8_t> v, int iShot = 0) {
   // 画像データは正方形を想定
   uint32_t size = (uint32_t)sqrt((float)v.size());
@@ -435,11 +491,40 @@ void drawImage(std::vector<uint8_t> v, int iShot = 0) {
   if(size == 0) {
       size = 64;
   }
-  for(int i = 0 ; i < v.size() ; i++ ) {
-      int x = i % size;
-      int y = i / size;
-      canvas.drawPixel(dx+x, dy+y, v[i]);
+  uint32_t prevT = millis();
+  auto serialPrintTime = [&prevT](String str = "") {
+    uint32_t curr = millis();
+    Serial.printf("%s: %dms\n", str.c_str(), curr - prevT);
+    prevT = curr;
+  };
+  
+  if(v.size() > 0) {
+    try {
+      // 一括更新: pushImageを使用してピクセルデータを一度に転送
+      int len = v.size();
+      uint16_t* pixelBuffer = (uint16_t*)heap_caps_malloc(len * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+      RGBColor* cl1 = canvas.getPalette();
+      uint32_t ccnt = canvas.getPaletteCount();
+      for(int i = 0; i < v.size(); i++) {
+        pixelBuffer[i] = v[i];
+      }
+
+      canvas.pushImage(dx, dy, size, size, pixelBuffer);
+      heap_caps_free(pixelBuffer);
+    } catch(const std::bad_alloc& e) {
+      // メモリ確保失敗: フォールバック処理（1ピクセルずつ）
+      canvas.startWrite();
+      for(int i = 0; i < v.size(); i++) {
+        int x = i % size;
+        int y = i / size;
+        canvas.writePixel(dx+x, dy+y, v[i]);
+      }
+      canvas.endWrite();
+      serialPrintTime("pushImage");
+    }
   }
+  //serialPrintTime("pushImage");
+  
   if(iShot == 1) {
       buttonDiscriptionCanvas(canvas, "A:Shot", "B:Menu");
   } else if(iShot == 2) {
@@ -452,7 +537,10 @@ void drawImage(std::vector<uint8_t> v, int iShot = 0) {
   canvas.pushSprite(&StickCP2.Display, 0, 0); 
 }
 
-// 画像撮影モード
+/**
+ * @brief 画像撮影モードのメニュー処理
+ * @details Aボタンで撮影、Bボタンでメニューに戻る操作を処理
+ */
 void shotMenu() {
   int btnA_cur = 0;   // ボタンAのステータス
   int btnA_last = 0;  // ボタンAの前回ステータス
@@ -484,7 +572,10 @@ void shotMenu() {
   }
 }
 
-// 画像表示モード
+/**
+ * @brief 保存された画像を表示するメニュー処理
+ * @details 画像一覧を取得し、選択した画像を表示する機能を提供
+ */
 void photoMenu() {
   auto resetLcd = []() {
       StickCP2.Display.clear();
@@ -544,12 +635,14 @@ void photoMenu() {
         StickCP2.Display.print(sendData);
     }
     if (client.available()) {
-      json_data = client.readStringUntil('\n');
+      //json_data = client.readStringUntil('\n');
+      json_data += client.readString();
     }
-    if(json_data.length() > 0) {
+    //if(json_data.length() > 0) {
+    if(json_data.indexOf('\n') != -1) {
       break;
     }
-    delay(100);
+    delay(10);
     StickCP2.Display.print(".");
   }
   client.stop();
@@ -624,7 +717,10 @@ void photoMenu() {
   }
 }
 
-// カラーパレット取得メニュー
+/**
+ * @brief カラーパレット選択・取得メニューの処理
+ * @details ジョイスティックでパレット選択、Aボタンで取得、Bボタンで戻る
+ */
 void ColorMenu() {
   int btnA_cur = 0;   // ボタンAのステータス
   int btnA_last = 0;  // ボタンAの前回ステータス
@@ -667,7 +763,10 @@ void ColorMenu() {
   }
 }
 
-// I2CでAtomと通信できるか確認するメニュー
+/**
+ * @brief I2C通信のテストメニュー
+ * @details Atomデバイスとの通信状況をハートビートで確認
+ */
 void i2cMenu() {
   int btnB_cur = 0;   // ボタンBのステータス
   int btnB_last = 0;  // ボタンBの前回ステータス
@@ -717,7 +816,10 @@ void i2cMenu() {
   StickCP2.Display.setTextScroll(false);
 }
 
-// Wifiメニュー
+/**
+ * @brief WiFi接続状況を表示するメニュー
+ * @details 自身のIPアドレス、接続先情報、接続状況を表示
+ */
 void wifiMenu() {
   int btnB_cur = 0;   // ボタンBのステータス
   int btnB_last = 0;  // ボタンBの前回ステータス
@@ -773,7 +875,10 @@ void wifiMenu() {
   }
 }
 
-// メニュー用アイコン取得関数
+/**
+ * @brief メニュー用アイコンを取得する
+ * @details 全てのメニューアイコンをAtomデバイスから取得し、初期表示を行う
+ */
 void getIcon() {
   if( ATOMINFO.menuCnt > 0 ) {
     vMenuColor.clear();
@@ -788,7 +893,13 @@ void getIcon() {
   }
 }
 
-// ボタン操作表示 Display直接表示用
+/**
+ * @brief ボタン操作説明をディスプレイに直接表示
+ * @details 画面下部にボタンAとボタンBの操作説明を表示
+ * @param display 表示対象のM5GFXオブジェクト
+ * @param btnADisc ボタンAの説明文字列
+ * @param btnBDisc ボタンBの説明文字列
+ */
 void buttonDiscriptionDiret(M5GFX display, String btnADisc, String btnBDisc) {
   int y = display.fontHeight();
   int x = display.textWidth(btnADisc);
@@ -799,7 +910,13 @@ void buttonDiscriptionDiret(M5GFX display, String btnADisc, String btnBDisc) {
   display.printf("%s", btnADisc.c_str());
 }
 
-// ボタン操作表示 Canvas用
+/**
+ * @brief ボタン操作説明をキャンバスに表示
+ * @details 画面下部にボタンAとボタンBの操作説明をキャンバスに描画
+ * @param display 表示対象のM5Canvasオブジェクト
+ * @param btnADisc ボタンAの説明文字列
+ * @param btnBDisc ボタンBの説明文字列
+ */
 void buttonDiscriptionCanvas(M5Canvas display, String btnADisc, String btnBDisc) {
   int y = display.fontHeight();
   int x = display.textWidth(btnADisc);
@@ -811,6 +928,10 @@ void buttonDiscriptionCanvas(M5Canvas display, String btnADisc, String btnBDisc)
 }
 
 
+/**
+ * @brief Arduino初期化関数
+ * @details デバイスの初期化、I2C通信、WiFi接続、ジョイスティック設定を行う
+ */
 void setup() {
   // put your setup code here, to run once:
   vColorIdx.clear();
@@ -872,6 +993,10 @@ void setup() {
 }
 
 
+/**
+ * @brief Arduinoメインループ関数
+ * @details ボタン入力とジョイスティック操作を監視し、メニュー操作を処理
+ */
 void loop() {
   // put your main code here, to run repeatedly:
   StickCP2.update();                // 本体ボタン状態更新

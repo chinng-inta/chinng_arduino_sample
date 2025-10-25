@@ -9,6 +9,7 @@
 #include <Wire.h>
 #include <ArduinoJson.h>
 #include <ArduinoJson.hpp>
+#include <unordered_map>
 #include "WiFi.h"
 // wifiの設定は別ファイルで定義しています。
 // Arduinoフォルダにwifi_settingフォルダ、
@@ -40,6 +41,7 @@ const char *pass = M5_PASSWORD;
 int status = WL_IDLE_STATUS;
 WiFiServer server(USEPORT); // 80番ポート(http)
 WiFiClient client;
+const unsigned int CHUNK_SIZE = 1024;
 
 // Atomic TFCard Base のピン配置に合わせて定義
 #define SCK_PIN   7
@@ -132,7 +134,11 @@ camera_config_t camera_config = {
   .sccb_i2c_port =1,
 };
 
-// I2Cマスターからの受信ハンドラ
+/**
+ * @brief I2Cマスターからのデータ受信ハンドラ
+ * @details STX/ETXフレーミングでコマンドを受信し、対応する処理を設定
+ * @param len 受信データ長
+ */
 void onReceived( int len ) {
   bool inPacket = false;
   String i2cRecieve = "";
@@ -206,6 +212,10 @@ void onReceived( int len ) {
   }
 }
 
+/**
+ * @brief I2Cマスターからのデータ要求ハンドラ
+ * @details 処理状態に応じて適切なレスポンスを送信
+ */
 void onRequest() {
   auto sendI2C = [](String s) {
     Wire.write(STX);
@@ -227,6 +237,11 @@ void onRequest() {
   }
 }
 
+/**
+ * @brief RGB565形式をRGB888形式に変換
+ * @param color RGB565形式の色データ
+ * @return RGB888形式の色データ
+ */
 uint32_t rgb565_to_rgb888(uint16_t color) {
   uint8_t r = (color >> 11) & 0x1F;
   uint8_t g = (color >> 5) & 0x3F;
@@ -237,7 +252,12 @@ uint32_t rgb565_to_rgb888(uint16_t color) {
   return (r << 16) | (g << 8) | b;
 }
 
-// パレット内で最も近い色を探す
+/**
+ * @brief カラーパレット内で最も近い色を検索
+ * @details RGB空間でのユークリッド距離を計算して最適な色を選択
+ * @param originalColor 元の色（RGB888形式）
+ * @return 最も近い色とそのインデックスのペア
+ */
 std::pair<uint32_t, uint8_t> findClosestColor(uint32_t originalColor) {
   uint8_t r1 = (originalColor >> 16) & 0xff;
   uint8_t g1 = (originalColor >> 8) & 0xff;
@@ -264,7 +284,11 @@ std::pair<uint32_t, uint8_t> findClosestColor(uint32_t originalColor) {
   return std::make_pair(closestColor, closestIndex);
 }
 
-// 撮影した写真をカラーパレットに変換
+/**
+ * @brief 撮影した写真をカラーパレットインデックスに変換
+ * @details 中央クロップ、ディザリング処理、90度回転を適用
+ * @return パレットインデックスの配列
+ */
 std::vector<uint8_t> originalToPalette() {
   std::vector<uint8_t> v;
   const int bayer4x4[4][4] = {
@@ -285,7 +309,7 @@ std::vector<uint8_t> originalToPalette() {
   int crop_start_x = (src_width - crop_width) / 2;
   int crop_start_y = (src_height - crop_height) / 2;
 
-
+  std::unordered_map<uint32_t, uint8_t> chashedColor;
   memset(crop_data, 0, sizeof(uint8_t) * crop_width * crop_height);
   for (int y = 0; y < crop_height; y++) {
     //for (int x = 0; x < crop_width; x++) {
@@ -298,8 +322,8 @@ std::vector<uint8_t> originalToPalette() {
       uint16_t src_color_565 = (src_pixels[src_y * src_width * 2 + src_x] << 8) | src_pixels[src_y * src_width * 2 + src_x+1];
       
       // RGB888に変換して、パレットの最も近い色を探す
-      uint32_t src_color_888 = rgb565_to_rgb888(src_color_565);
-      //uint32_t src_color_888 = canvas0.color16to24(src_color_565);
+      // uint32_t src_color_888 = rgb565_to_rgb888(src_color_565);
+      uint32_t src_color_888 = canvas0.color16to24(src_color_565);
       int r,g,b;
       r = (src_color_888 >> 16) & 0xff;
       g = (src_color_888 >> 8) & 0xff;
@@ -311,23 +335,37 @@ std::vector<uint8_t> originalToPalette() {
       b = constrain(b+threshold, 0, 255);
       uint32_t dst_color_888 = (r << 16) | (g << 8) | b;
 
-      std::pair<uint32_t, uint8_t> pair = findClosestColor(dst_color_888);
+      uint8_t idx;
+      if( chashedColor.find(dst_color_888) != chashedColor.end() ) {
+        idx = chashedColor[dst_color_888];
+      } else {
+        std::pair<uint32_t, uint8_t> pair = findClosestColor(dst_color_888);
+        idx = pair.second;
+        chashedColor[dst_color_888] = idx;
+      }
       
-      crop_data[y][x/2] = pair.second;
-
+      crop_data[y][x/2] = idx;
     }
   }
+  chashedColor.clear();
+
   // カメラUSBポート下側の画像が撮れるので、90度回転させる
+  v.resize(crop_height * crop_width);
   for (int y = 0; y < crop_height; y++) {
     for (int x = 0; x < crop_width; x++) {
-      v.push_back(crop_data[x][crop_height -1 -y]);
+      //v.push_back(crop_data[x][crop_height -1 -y]);
+      v.at(y * crop_width + x) = crop_data[x][crop_height -1 -y];
     }
   }
 
   return v;
 }
 
-// アイコン画像をカラーパレットに変換
+/**
+ * @brief アイコン画像をカラーパレットインデックスに変換
+ * @details SDカードからPNG画像を読み込み、パレット色に変換
+ * @return パレットインデックスの配列
+ */
 std::vector<uint8_t> IconToPalette() {
   std::vector<uint8_t> v;
   char png_path[64];
@@ -359,6 +397,9 @@ std::vector<uint8_t> IconToPalette() {
   canvas1.drawPng(png_data_buffer, png_data_size, 0, 0);
   heap_caps_free(png_data_buffer);
 
+  std::unordered_map<uint32_t, uint8_t> chashedColor;
+  
+  v.resize(icon_height * icon_width);
   for (int y = 0; y < icon_height; y++) {
     for (int x = 0; x < icon_width; x++) {
       // 元画像から対応するピクセル座標を計算
@@ -370,16 +411,31 @@ std::vector<uint8_t> IconToPalette() {
       RGBColor src_rgb = canvas1.readPixelRGB(x,y);
       uint32_t src_color_888 = src_rgb.RGB888();
 
-      std::pair<uint32_t, uint8_t> pair = findClosestColor(src_color_888);
-      v.push_back(pair.second);
+      uint8_t idx;
+      if(chashedColor.find(src_color_888) != chashedColor.end()) {
+        idx = chashedColor[src_color_888];
+      } else {
+        std::pair<uint32_t, uint8_t> pair = findClosestColor(src_color_888);
+        idx = pair.second;
+        chashedColor[src_color_888] = idx;
+      }
+      v.at(y * icon_width + x) = idx;
+
+      //v.push_backpair.second);
     }
   }
+  chashedColor.clear();
   canvas1.deleteSprite();  // png読み込み用スプライト解放
 
   return v;
 }
 
-// 過去に撮影した画像をカラーパレットに変換
+/**
+ * @brief 保存された画像をカラーパレットインデックスに変換
+ * @details SDカードからBMP画像を読み込み、中央クロップして変換
+ * @param fileName 変換対象の画像ファイル名
+ * @return パレットインデックスの配列
+ */
 std::vector<uint8_t> SelPhotoToPalette( String fileName ) {
   std::vector<uint8_t> v;
   char bmp_path[128];
@@ -425,6 +481,7 @@ std::vector<uint8_t> SelPhotoToPalette( String fileName ) {
   canvas1.drawBmp(bmp_data_buffer, bmp_data_size, 0, 0, crop_width, crop_height, crop_start_x, crop_start_y, 1.0, 1.0, top_left);
   heap_caps_free(bmp_data_buffer);
 
+  std::unordered_map<uint32_t, uint8_t> chashedColor;
   memset(crop_data, 0, sizeof(uint8_t) * crop_width * crop_height);
   for (int y = 0; y < crop_height; y++) {
     for (int x = 0; x < crop_width; x++) {
@@ -437,23 +494,38 @@ std::vector<uint8_t> SelPhotoToPalette( String fileName ) {
       RGBColor src_rgb = canvas1.readPixelRGB(x,y);
       uint32_t src_color_888 = src_rgb.RGB888();
 
-      std::pair<uint32_t, uint8_t> pair = findClosestColor(src_color_888);
-      crop_data[y][x] = pair.second;
+      uint8_t idx;
+      if(chashedColor.find(src_color_888) != chashedColor.end()) {
+        idx = chashedColor[src_color_888];
+      } else {
+        std::pair<uint32_t, uint8_t> pair = findClosestColor(src_color_888);
+        idx = pair.second;
+        chashedColor[src_color_888] = idx;
+      }
+      
+      crop_data[y][x] = idx;
     }
   }
+  chashedColor.clear();
   canvas1.deleteSprite();  // png読み込み用スプライト解放
-  
+
+  v.resize(crop_height * crop_width);
   // オリジナル画像はカメラUSBポート下側の画像なので、90度回転させる
   for (int y = 0; y < crop_height; y++) {
     for (int x = 0; x < crop_width; x++) {
-      v.push_back(crop_data[x][crop_height -1 -y]);
+      //v.push_back(crop_data[x][crop_height -1 -y]);
+      v.at(y * crop_width + x) = crop_data[x][crop_height -1 -y];
     }
   }
 
   return v;
 }
 
-// 画像の送信
+/**
+ * @brief 画像データをWiFi経由で送信
+ * @details パレットインデックスを圧縮してJSON形式で送信
+ * @param v 送信する画像のパレットインデックス配列
+ */
 void sendImage(std::vector<uint8_t> v) {
   client = server.available();
   if (!client) {
@@ -480,11 +552,21 @@ void sendImage(std::vector<uint8_t> v) {
   jsonString.reserve(v.size()); 
   int jsonLen = serializeJson(doc, jsonString);
   Serial.printf("Sending JSON (%dbytes)...\n", jsonLen);
-  client.println(jsonString);
-
+  //client.println(jsonString);
+  
+  for (int i = 0; i < jsonString.length(); i += CHUNK_SIZE) {
+      int len = min(CHUNK_SIZE, jsonString.length() - i);
+      client.print(jsonString.substring(i, i + len));
+      delay(10);  // 受信側の処理時間を確保
+  }
+  client.println("");
+  Serial.printf("Sent JSON\n");
 }
 
-// ファイルの一覧をM5 StickC Plus2へ送信
+/**
+ * @brief ファイル一覧をWiFi経由で送信
+ * @details 保存された画像ファイルのリストをJSON形式で送信
+ */
 void SendFileList() {
   client = server.available();
   if (!client) {
@@ -505,9 +587,21 @@ void SendFileList() {
   jsonString.reserve(paletteFile.size()); 
   int jsonLen = serializeJson(doc, jsonString);
   Serial.printf("Sending JSON (%dbytes)...\n", jsonLen);
-  client.println(jsonString);
+  // client.println(jsonString);
+  for (int i = 0; i < jsonString.length(); i += CHUNK_SIZE) {
+      int len = min(CHUNK_SIZE, jsonString.length() - i);
+      client.print(jsonString.substring(i, i + len));
+      delay(10);  // 受信側の処理時間を確保
+  }
+  client.println("");
+  Serial.printf("Sent JSON\n");
 }
 
+/**
+ * @brief カメラの初期化
+ * @details ESP32カメラの設定と初期化を実行
+ * @return 成功時true、失敗時false
+ */
 bool CameraBegin() {
   esp_err_t err = esp_camera_init(&camera_config);
   if (err != ESP_OK) {
@@ -577,6 +671,11 @@ bool CameraBegin() {
   return true;
 }
 
+/**
+ * @brief カメラから画像を取得
+ * @details フレームバッファに画像データを取得
+ * @return 成功時true、失敗時false
+ */
 bool CameraGet() {
   fb = esp_camera_fb_get();
   if (!fb) {
@@ -585,6 +684,11 @@ bool CameraGet() {
   return true;
 }
 
+/**
+ * @brief カメラフレームバッファを解放
+ * @details 使用済みフレームバッファのメモリを解放
+ * @return 成功時true、失敗時false
+ */
 bool CameraFree() {
   if (fb) {
     esp_camera_fb_return(fb);
@@ -593,6 +697,10 @@ bool CameraFree() {
   return false;
 }
 
+/**
+ * @brief 撮影した元画像をBMP形式でSDカードに保存
+ * @details フレームバッファの内容をBMPファイルとして保存し、ファイル一覧に追加
+ */
 void saveToSD_OriginalBMP() {
   char filename[64];
   memset(filename, 0, 64);
@@ -618,6 +726,11 @@ void saveToSD_OriginalBMP() {
   }
 }
 
+/**
+ * @brief パレット変換後の画像をBMP形式でSDカードに保存
+ * @details パレットインデックスからRGB色に変換してBMPファイルを作成
+ * @param v パレットインデックスの配列
+ */
 void saveToSD_ConvertBMP(std::vector<uint8_t> v) {
   char filename[64];
   memset(filename, 0, 64);
@@ -677,7 +790,15 @@ void saveToSD_ConvertBMP(std::vector<uint8_t> v) {
   }
 }
 
-// ファイルとディレクトリを一覧表示する関数
+/**
+ * @brief ファイルとディレクトリを再帰的に一覧取得
+ * @details 指定されたディレクトリ内のファイル一覧を高速に取得
+ * @param fs ファイルシステムオブジェクト
+ * @param dirname 検索対象ディレクトリ名
+ * @param levels 再帰レベル（表示用インデント）
+ * @param bDisp デバッグ表示フラグ（デフォルト: false）
+ * @return ファイルパスのベクター
+ */
 std::vector<String> listFiles(fs::FS &fs, const char * dirname, int levels, bool bDisp = false) {
   std::vector<String> vFile;
   if(bDisp) Serial.printf("Listing directory: %s\n", dirname);
@@ -727,7 +848,10 @@ std::vector<String> listFiles(fs::FS &fs, const char * dirname, int levels, bool
   return vFile;
 }
 
-// カラーパレットのJson読み込み
+/**
+ * @brief カラーパレット設定をJSONファイルから読み込み
+ * @details SDカードから設定ファイルを読み込み、パレット情報とファイル一覧を初期化
+ */
 void jsonLoad() {
   String filename = "/setting/color.json";
   int iconCnt = 0;
@@ -839,11 +963,18 @@ GETSETTING_FAIL:
   return;
 }
 
+/**
+ * @brief Arduino初期化関数
+ * @details カメラ、WiFi、SDカード、I2C通信の初期化を実行
+ */
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(19200);                           // シリアルコンソール開始
   while(!Serial) delay(10);
   delay(500);
+
+  pinMode(4, OUTPUT);
+  digitalWrite(4, HIGH);  
 
   //auto cfg = M5.config();
   //M5.begin(cfg);
@@ -902,6 +1033,10 @@ void setup() {
   Serial.println("Setup End");
 }
 
+/**
+ * @brief Arduinoメインループ関数
+ * @details I2Cコマンドに応じて画像処理、データ送信などを実行
+ */
 void loop() {
   if( dataState == STATE_READY_TO_SEND) {
     delay(100);
