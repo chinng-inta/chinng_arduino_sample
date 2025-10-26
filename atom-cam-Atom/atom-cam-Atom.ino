@@ -16,7 +16,7 @@
 // そのフォルダにM5_wifi.hを置いてください
 #include "..\wifi_setting\M5_wifi.h"
 
-#define LEDIR_PIN 47
+//#define LEDIR_PIN 47
 #define POWER_GPIO_NUM 18
 
 // 切り出す画像のサイズ
@@ -973,8 +973,8 @@ void setup() {
   while(!Serial) delay(10);
   delay(500);
 
-  pinMode(4, OUTPUT);
-  digitalWrite(4, HIGH);  
+  //pinMode(4, OUTPUT);
+  //digitalWrite(4, HIGH);  
 
   //auto cfg = M5.config();
   //M5.begin(cfg);
